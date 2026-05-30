@@ -59,10 +59,6 @@ class DTCClient:
             if task is not None:
                 task.cancel()
         if self._writer is not None:
-            try:
-                await self.send({"Type": int(MessageType.LOGOFF), "Reason": "client closing"})
-            except Exception:
-                pass
             self._writer.close()
             try:
                 await self._writer.wait_closed()

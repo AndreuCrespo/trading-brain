@@ -11,6 +11,7 @@ class Config:
     password: str
     client_name: str
     heartbeat_interval: int
+    data_path: str
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -22,4 +23,5 @@ class Config:
             password=os.getenv("SIERRA_DTC_PASSWORD", ""),
             client_name=os.getenv("SIERRA_DTC_CLIENT_NAME", "sierra-mcp"),
             heartbeat_interval=int(os.getenv("SIERRA_DTC_HEARTBEAT", "10")),
+            data_path=os.getenv("SIERRA_DATA_PATH", r"D:\SierraChart\Data"),
         )
