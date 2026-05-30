@@ -1,0 +1,19 @@
+[project]
+name = "sierra-mcp"
+version = "0.1.0"
+description = "MCP server bridging Claude to Sierra Chart via DTC Protocol"
+requires-python = ">=3.11"
+dependencies = [
+    "mcp[cli]>=1.2.0",
+    "pydantic>=2.0",
+]
+
+[project.scripts]
+sierra-mcp = "sierra_mcp.server:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sierra_mcp"]
