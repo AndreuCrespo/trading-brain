@@ -1,0 +1,19 @@
+[project]
+name = "discord-mcp"
+version = "0.1.0"
+description = "MCP server exposing Discord channels (bot-mode read-only) as a knowledge source for Claude"
+requires-python = ">=3.11"
+dependencies = [
+    "mcp[cli]>=1.2.0",
+    "httpx>=0.27",
+]
+
+[project.scripts]
+discord-mcp = "discord_mcp.server:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/discord_mcp"]
