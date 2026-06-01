@@ -208,8 +208,12 @@ Use `groups.yml` for channel taxonomy changes. Do not hardcode channel names in 
 - `search_journal`
 - `list_recent`
 - `daily_summary`
+- `list_workflows`
+- `premarket_review`
+- `postmarket_review`
+- `weekly_trading_review`
 
-It also exposes these MCP prompts:
+It also exposes matching MCP prompts:
 
 - `premarket_review`
 - `postmarket_review`

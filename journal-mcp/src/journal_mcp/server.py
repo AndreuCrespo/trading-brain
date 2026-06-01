@@ -40,7 +40,7 @@ def _clean_text(value: str | None) -> str | None:
     title="Premarket Review",
     description="Build a futures premarket plan from Discord prep, Sierra context, and journal memory.",
 )
-def premarket_review(
+def premarket_review_prompt(
     server: str = "Estudio trading donAdri",
     futures_symbol: str = "MESM26-CME",
     nasdaq_symbol: str = "MNQM26-CME",
@@ -80,7 +80,7 @@ Then ask me whether to save the final plan to the journal. If I say yes, use
     title="Postmarket Review",
     description="Review the trading day using Discord postmarket, Sierra context, screenshots, and journal memory.",
 )
-def postmarket_review(
+def postmarket_review_prompt(
     server: str = "Estudio trading donAdri",
     futures_symbol: str = "MESM26-CME",
     nasdaq_symbol: str = "MNQM26-CME",
@@ -120,7 +120,7 @@ Then ask me whether to save a postmarket observation. If I say yes, use
     title="Weekly Trading Review",
     description="Summarize the week using journal entries, Discord write-ups, and market context.",
 )
-def weekly_trading_review(
+def weekly_trading_review_prompt(
     server: str = "Estudio trading donAdri",
     futures_symbol: str = "MESM26-CME",
     nasdaq_symbol: str = "MNQM26-CME",
@@ -153,6 +153,75 @@ Return:
 Then ask me whether to save the weekly review. If I say yes, use
 `log_observation` with tags `weekly-review`, `futures`, `process`.
 """.strip()
+
+
+@mcp.tool()
+def premarket_review(
+    server: str = "Estudio trading donAdri",
+    futures_symbol: str = "MESM26-CME",
+    nasdaq_symbol: str = "MNQM26-CME",
+) -> dict:
+    """Return the premarket workflow instructions for Claude to execute.
+
+    Claude Desktop currently exposes tools more reliably than MCP prompts. Call
+    this tool, then follow the returned instructions using Discord, Sierra and
+    Journal tools.
+    """
+    return {
+        "ok": True,
+        "workflow": "premarket_review",
+        "instructions": premarket_review_prompt(server, futures_symbol, nasdaq_symbol),
+    }
+
+
+@mcp.tool()
+def postmarket_review(
+    server: str = "Estudio trading donAdri",
+    futures_symbol: str = "MESM26-CME",
+    nasdaq_symbol: str = "MNQM26-CME",
+) -> dict:
+    """Return the postmarket workflow instructions for Claude to execute."""
+    return {
+        "ok": True,
+        "workflow": "postmarket_review",
+        "instructions": postmarket_review_prompt(server, futures_symbol, nasdaq_symbol),
+    }
+
+
+@mcp.tool()
+def weekly_trading_review(
+    server: str = "Estudio trading donAdri",
+    futures_symbol: str = "MESM26-CME",
+    nasdaq_symbol: str = "MNQM26-CME",
+) -> dict:
+    """Return the weekly review workflow instructions for Claude to execute."""
+    return {
+        "ok": True,
+        "workflow": "weekly_trading_review",
+        "instructions": weekly_trading_review_prompt(server, futures_symbol, nasdaq_symbol),
+    }
+
+
+@mcp.tool()
+def list_workflows() -> dict:
+    """List available trading workflows exposed by journal-mcp."""
+    return {
+        "ok": True,
+        "workflows": [
+            {
+                "name": "premarket_review",
+                "description": "Read Discord prep, Sierra futures context and journal memory to build the daily plan.",
+            },
+            {
+                "name": "postmarket_review",
+                "description": "Read Discord postmarket, screenshots, Sierra context and journal memory to review the day.",
+            },
+            {
+                "name": "weekly_trading_review",
+                "description": "Use journal, Discord write-ups and futures context to summarize the week.",
+            },
+        ],
+    }
 
 
 @mcp.tool()
