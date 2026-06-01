@@ -152,3 +152,34 @@ def aggregate_to_bars(records: list[TickRecord], interval_seconds: int) -> list[
     for b in ordered:
         b["time"] = datetime.fromtimestamp(b["time"], tz=timezone.utc).isoformat()
     return ordered
+
+
+def aggregate_session_stats(records: list[TickRecord]) -> dict:
+    """Aggregate records into simple session-level stats."""
+    if not records:
+        return {}
+
+    first = records[0]
+    last = records[-1]
+    high = max(r.close for r in records)
+    low = min(r.close for r in records)
+    volume = sum(r.volume for r in records)
+    bid_volume = sum(r.bid_volume for r in records)
+    ask_volume = sum(r.ask_volume for r in records)
+    vwap_num = sum(r.close * r.volume for r in records)
+    vwap = (vwap_num / volume) if volume else None
+
+    return {
+        "start_time": datetime.fromtimestamp(first.unix_time, tz=timezone.utc).isoformat(),
+        "end_time": datetime.fromtimestamp(last.unix_time, tz=timezone.utc).isoformat(),
+        "open": first.close,
+        "high": high,
+        "low": low,
+        "last": last.close,
+        "range": high - low,
+        "volume": volume,
+        "bid_volume": bid_volume,
+        "ask_volume": ask_volume,
+        "delta": ask_volume - bid_volume,
+        "vwap": vwap,
+    }

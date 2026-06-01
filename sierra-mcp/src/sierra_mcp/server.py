@@ -3,7 +3,7 @@ import logging
 import os
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, time as dt_time, timedelta, timezone
 from pathlib import Path
 
 # When loaded by `mcp dev` (which imports this file by path, not as a package),
@@ -40,9 +40,67 @@ INTERVAL_SECONDS = {
     "1d": 86400,
 }
 
+SESSION_LOOKBACK_RECORDS = 1_000_000
+
 
 def datetime_from_unix(ts: float) -> str:
     return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+
+
+def _atr(bars: list[dict], period: int) -> float | None:
+    if len(bars) < 2:
+        return None
+
+    true_ranges: list[float] = []
+    for i in range(1, len(bars)):
+        high = float(bars[i]["high"])
+        low = float(bars[i]["low"])
+        prev_close = float(bars[i - 1]["close"])
+        true_ranges.append(max(high - low, abs(high - prev_close), abs(low - prev_close)))
+
+    if not true_ranges:
+        return None
+    sample = true_ranges[-period:]
+    return round(sum(sample) / len(sample), 4)
+
+
+def _simple_trend(bars: list[dict]) -> str:
+    if len(bars) < 5:
+        return "unknown"
+
+    closes = [float(b["close"]) for b in bars]
+    short = closes[-5:]
+    slope = short[-1] - short[0]
+    higher_high = float(bars[-1]["high"]) >= max(float(b["high"]) for b in bars[-5:-1])
+    lower_low = float(bars[-1]["low"]) <= min(float(b["low"]) for b in bars[-5:-1])
+
+    if slope > 0 and higher_high:
+        return "up"
+    if slope < 0 and lower_low:
+        return "down"
+    return "sideways"
+
+
+def _delta_percent(bid_volume: int | float, ask_volume: int | float) -> float | None:
+    total = bid_volume + ask_volume
+    if total <= 0:
+        return None
+    return round((ask_volume - bid_volume) / total * 100, 2)
+
+
+def _globex_equity_session_start(last_tick_unix: float) -> float:
+    """Approximate CME equity index futures session start in UTC.
+
+    ES/NQ/MES/MNQ trade nearly 24h with the main daily Globex session starting
+    at 17:00 Chicago, which is 22:00 UTC during US daylight saving time. This is
+    good enough for the current CME futures context MVP.
+    """
+    dt = datetime.fromtimestamp(last_tick_unix, tz=timezone.utc)
+    session_date = dt.date()
+    if dt.timetz() < dt_time(22, 0, tzinfo=timezone.utc):
+        session_date = session_date - timedelta(days=1)
+    session_start = datetime.combine(session_date, dt_time(22, 0, tzinfo=timezone.utc))
+    return session_start.timestamp()
 
 
 @mcp.tool()
@@ -349,6 +407,113 @@ async def get_scid_status(symbol: str) -> dict:
             "tick_age_seconds": round(max(0.0, now - record.unix_time), 3),
         })
     return out
+
+
+@mcp.tool()
+async def get_futures_context(
+    symbol: str,
+    interval: str = "1m",
+    bars_count: int = 30,
+    atr_period: int = 14,
+) -> dict:
+    """Return a compact futures context pack from Sierra's local .scid file.
+
+    Designed for ES/NQ/MES/MNQ analysis when DTC market data is unavailable:
+    latest tick, file freshness, recent bars, session OHLC/VWAP/delta, ATR and
+    a simple directional read. This is the main market-context tool for Claude
+    conversations.
+    """
+    if interval not in INTERVAL_SECONDS or interval in ("tick", "1s"):
+        return {"ok": False, "error": "interval must be 1m/5m/15m/30m/1h/4h/1d"}
+
+    bars_count = max(5, min(bars_count, 500))
+    atr_period = max(2, min(atr_period, 100))
+    interval_sec = INTERVAL_SECONDS[interval]
+
+    config = Config.from_env()
+    scid_path = os.path.join(config.data_path, f"{symbol}.scid")
+    if not os.path.exists(scid_path):
+        return {"ok": False, "error": f"file not found: {scid_path}"}
+
+    records = await asyncio.to_thread(
+        scid_reader.read_tail_records,
+        scid_path,
+        SESSION_LOOKBACK_RECORDS,
+    )
+    if not records:
+        return {"ok": False, "error": f"no records in file: {scid_path}"}
+
+    bars = scid_reader.aggregate_to_bars(records, interval_sec)
+    recent_bars = bars[-bars_count:]
+    session_start = _globex_equity_session_start(records[-1].unix_time)
+    session_records = [r for r in records if r.unix_time >= session_start]
+    if not session_records:
+        session_records = records
+    session = scid_reader.aggregate_session_stats(session_records)
+    status = await asyncio.to_thread(scid_reader.file_status, scid_path)
+    last_record = records[-1]
+
+    last_price = last_record.close
+    vwap = session.get("vwap")
+    distance_to_vwap = (last_price - vwap) if vwap is not None else None
+    distance_to_vwap_points = round(distance_to_vwap, 4) if distance_to_vwap is not None else None
+
+    atr = _atr(recent_bars, atr_period)
+    trend = _simple_trend(recent_bars)
+    now = time.time()
+    tick_age = max(0.0, now - last_record.unix_time)
+    file_age = max(0.0, now - status["modified_unix"])
+
+    warnings: list[str] = []
+    if file_age > 10:
+        warnings.append(f"SCID file is stale by {file_age:.1f}s")
+    if tick_age > 30:
+        warnings.append(f"last tick is stale by {tick_age:.1f}s")
+    if len(recent_bars) < bars_count:
+        warnings.append(f"only {len(recent_bars)} bars available")
+
+    bias_parts: list[str] = []
+    if distance_to_vwap is not None:
+        bias_parts.append("above_vwap" if distance_to_vwap > 0 else "below_vwap")
+    bias_parts.append(trend)
+
+    return {
+        "ok": True,
+        "symbol": symbol,
+        "interval": interval,
+        "source": scid_path,
+        "latest": {
+            "price": last_price,
+            "time": datetime_from_unix(last_record.unix_time),
+            "tick_age_seconds": round(tick_age, 3),
+            "file_age_seconds": round(file_age, 3),
+            "volume": last_record.volume,
+            "bid_volume": last_record.bid_volume,
+            "ask_volume": last_record.ask_volume,
+        },
+        "session": session,
+        "indicators": {
+            "vwap": vwap,
+            "distance_to_vwap_points": distance_to_vwap_points,
+            "atr": atr,
+            "atr_period": atr_period,
+            "delta": session.get("delta"),
+            "delta_percent": _delta_percent(session.get("bid_volume", 0), session.get("ask_volume", 0)),
+        },
+        "read": {
+            "trend": trend,
+            "bias": ", ".join(bias_parts),
+            "warnings": warnings,
+        },
+        "bars_count": len(recent_bars),
+        "bars": recent_bars,
+        "ticks_scanned": len(records),
+        "session_ticks": len(session_records),
+        "file": {
+            "record_count": status["record_count"],
+            "modified_time": status["modified_time"],
+        },
+    }
 
 
 async def _collect_multi(

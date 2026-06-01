@@ -9,7 +9,7 @@ SQLite journal for persistent memory.
 
 | MCP | Purpose | Tools |
 |---|---|---|
-| **sierra-mcp** | Sierra Chart bridge (futures: ES, NQ, MES, MNQ on CME) | `ping_sierra`, `get_quote`, `get_recent_bars` (DTC), `get_recent_bars_scid` (local file), `get_latest_tick_scid`, `get_scid_status`, `list_trade_accounts`, `get_account_balance`, `get_positions` |
+| **sierra-mcp** | Sierra Chart bridge (futures: ES, NQ, MES, MNQ on CME) | `ping_sierra`, `get_quote`, `get_recent_bars` (DTC), `get_recent_bars_scid` (local file), `get_latest_tick_scid`, `get_scid_status`, `get_futures_context`, `list_trade_accounts`, `get_account_balance`, `get_positions` |
 | **discord-mcp** | Read-only Discord channels as a knowledge base | `list_servers`, `list_channels`, `read_recent_messages`, `search_messages`, `fetch_image`, `list_groups`, `read_group` |
 | **journal-mcp** | Local SQLite memory for observations, trades, and reviews | `log_observation`, `log_trade`, `update_trade`, `search_journal`, `list_recent`, `daily_summary` |
 
@@ -30,6 +30,10 @@ Two paths, complementary:
    into bars on the fly, and can read the latest tick with file freshness.
    Works regardless of DTC permissions. ~Seconds of lag from real-time (file
    flush cadence).
+
+`get_futures_context` is the main ES/NQ context pack: latest tick, freshness,
+recent bars, approximate current Globex session OHLC/VWAP/delta, ATR, and a
+simple bias read.
 
 ## Requirements
 
@@ -170,6 +174,7 @@ daily_summary(date="2026-06-01")
 
 - ✅ `ping_sierra`, `get_recent_bars_scid` validated against live data
 - ✅ `get_latest_tick_scid` smoke-tested on MESM26-CME with ~1-2s file/tick age
+- ✅ `get_futures_context` smoke-tested on MESM26-CME using current Globex session
 - ✅ Discord tools all validated against the live community server
 - ✅ journal-mcp smoke-tested locally against SQLite
 - ⚠️ `get_quote` / `get_recent_bars` (DTC) return *"Request is not authorized"*
