@@ -1,0 +1,188 @@
+# sierra-mcp
+
+Personal trading copilot built as a set of MCP servers for Claude. Connects
+Claude to **Sierra Chart** (live market data and account state) and **Discord**
+(a trading-education community used as a knowledge source) so conversations can
+reason over both at once.
+
+> Repo named `sierra-mcp` for historical reasons — it actually hosts multiple
+> MCP servers under one umbrella.
+
+## What's inside
+
+| MCP | Purpose | Tools |
+|---|---|---|
+| **sierra-mcp** | Sierra Chart bridge (futures: ES, NQ, MES, MNQ on CME) | `ping_sierra`, `get_quote`, `get_recent_bars` (DTC), `get_recent_bars_scid` (local file), `list_trade_accounts`, `get_account_balance`, `get_positions` |
+| **discord-mcp** | Read-only Discord channels as a knowledge base | `list_servers`, `list_channels`, `read_recent_messages`, `search_messages`, `fetch_image`, `list_groups`, `read_group` |
+
+Both are read-only today. Order placement and any writing-back is deliberately
+out of scope until the read path is validated end-to-end.
+
+## How they talk to Sierra Chart
+
+Two paths, complementary:
+
+1. **DTC Protocol** (`get_quote`, `get_recent_bars`, account / positions) — TCP
+   JSON over Sierra's local DTC server. Requires Denali Exchange Data Feed +
+   Service Package 11+ for full market-data redistribution. SC Data
+   (free/delayed) refuses DTC redistribution.
+2. **`.scid` file reader** (`get_recent_bars_scid`) — reads Sierra's local
+   tick-storage files directly from disk, aggregates ticks into bars on the
+   fly. Works regardless of DTC permissions. ~Seconds of lag from real-time
+   (file flush cadence).
+
+## Requirements
+
+- Windows (Sierra Chart is Windows-native; paths assume `D:\SierraChart\Data\`)
+- Python 3.11+
+- [uv](https://docs.astral.sh/uv/) for env/lockfile management
+- Sierra Chart account with DTC enabled (Global Settings → Sierra Chart Server
+  Settings → Encoding: **JSON**)
+- Discord bot token (Application from
+  [discord.com/developers/applications](https://discord.com/developers/applications),
+  Message Content Intent enabled)
+- Claude Desktop
+
+## Setup
+
+```powershell
+# Clone
+git clone https://github.com/AndreuCrespo/sierra-mcp.git D:\inversión
+cd D:\inversión
+
+# Install each MCP (creates per-project .venv + uv.lock)
+cd sierra-mcp  ; uv sync ; cd ..
+cd discord-mcp ; uv sync ; cd ..
+```
+
+Per project, copy `.env.example` → `.env` and fill in secrets. discord-mcp's
+`.env`:
+```
+DISCORD_BOT_TOKEN=your-bot-token
+```
+
+sierra-mcp env vars (all optional, sensible defaults):
+```
+SIERRA_DTC_HOST=127.0.0.1
+SIERRA_DTC_PORT=11099
+SIERRA_DTC_HISTORICAL_PORT=11098
+SIERRA_DATA_PATH=D:\SierraChart\Data
+```
+
+## Wiring into Claude Desktop
+
+Edit `%APPDATA%\Claude\claude_desktop_config.json` and add:
+
+```json
+{
+  "mcpServers": {
+    "sierra": {
+      "command": "D:\\inversión\\sierra-mcp\\.venv\\Scripts\\python.exe",
+      "args": ["D:\\inversión\\sierra-mcp\\src\\sierra_mcp\\server.py"]
+    },
+    "discord": {
+      "command": "D:\\inversión\\discord-mcp\\.venv\\Scripts\\python.exe",
+      "args": ["D:\\inversión\\discord-mcp\\src\\discord_mcp\\server.py"]
+    }
+  }
+}
+```
+
+Restart Claude Desktop fully (Quit from system tray, not minimise). The MCPs
+appear under Configuración → Desarrollador.
+
+> Note: args use the absolute file path instead of `python -m sierra_mcp.server`
+> because Claude Desktop mangles the `ó` in the project path when invoking
+> `-m` module mode. Loading the file directly works around this; each
+> `server.py` has a `sys.path` shim at the top so its package imports resolve.
+
+## Dev workflow (MCP Inspector)
+
+```powershell
+cd sierra-mcp          # or discord-mcp
+uv run mcp dev src/sierra_mcp/server.py
+```
+
+In the inspector UI, point Command at the per-project venv python and Args at
+the file path (same reason as Claude Desktop):
+
+- Command: `D:\inversión\sierra-mcp\.venv\Scripts\python.exe`
+- Arguments: `D:\inversión\sierra-mcp\src\sierra_mcp\server.py`
+
+## Discord channel taxonomy
+
+discord-mcp groups channels into domain categories defined in
+[`discord-mcp/groups.yml`](discord-mcp/groups.yml): `prep`, `post`, `recursos`,
+`fondeo`, `futuros`, `stocks`. Matched by exact name or prefix. Edit the YAML
+to add new channels — no code changes needed.
+
+`read_group` fans out reads across every channel in a group in parallel:
+
+```
+read_group(server="...", group="post", limit_per_channel=5)
+# → snapshot of postmarket-futuros, postmarket-stocks, setups-database,
+#   writes-up all at once
+```
+
+## Example conversations
+
+> *"Read the last 5 messages from the `post` group on Estudio trading donAdri,
+> grab the last 10 1-min bars of MESM26-CME, and tell me whether anything
+> discussed lines up with recent price action."*
+
+> *"There's a 29-May post in postmarket-futuros with two attached screenshots.
+> Read them and summarise what the EOM trade looked like."*
+
+> *"Walk me through `📘15-theplan` and tell me how donAdri's system handles
+> position sizing."*
+
+## Status & known limitations
+
+- ✅ `ping_sierra`, `get_recent_bars_scid` validated against live data
+- ✅ Discord tools all validated against the live community server
+- ⚠️ `get_quote` / `get_recent_bars` (DTC) return *"Request is not authorized"*
+  on the current account despite SP11 + Denali active. Workaround in place via
+  `get_recent_bars_scid`; investigating with Sierra support.
+- ⚠️ `get_account_balance` / `get_positions` return empty / timeout on the Sim
+  accounts before any trade has been opened in Sierra. Validation pending.
+- Read-only across the board. No order placement.
+
+## Roadmap
+
+Short term, in priority order:
+1. `journal-mcp` — SQLite-backed persistent memory so Claude can write
+   observations / trade logs / post-mortems and recall them in future sessions.
+2. Indicators on top of `.scid` bars: VWAP, ATR, RVOL, market profile, delta.
+3. Resolve DTC market-data authorization (or work around with depth/quote
+   readers off the local files).
+4. Order placement (sim first, with explicit confirmation per call).
+
+Longer term: more data sources as separate MCPs (SEC EDGAR, FRED, news), simple
+backtest framework over `.scid`.
+
+## Layout
+
+```
+inversión/
+├── README.md
+├── .gitignore
+├── sierra-mcp/
+│   ├── CLAUDE.md            # per-project guidance for future Claude sessions
+│   ├── pyproject.toml
+│   ├── uv.lock
+│   └── src/sierra_mcp/
+│       ├── server.py        # FastMCP tools
+│       ├── dtc_client.py    # async DTC over TCP/JSON
+│       ├── dtc_messages.py
+│       ├── scid_reader.py   # local .scid tick file reader
+│       └── config.py
+└── discord-mcp/
+    ├── pyproject.toml
+    ├── uv.lock
+    ├── groups.yml           # channel taxonomy (edit me, not code)
+    └── src/discord_mcp/
+        ├── server.py
+        ├── client.py        # Discord REST API client
+        ├── groups.py        # YAML loader + channel matcher
+        └── config.py
+```
