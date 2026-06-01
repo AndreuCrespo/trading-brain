@@ -11,3 +11,7 @@ dist/
 .mypy_cache/
 .idea/
 .vscode/
+data/
+*.db
+*.db-shm
+*.db-wal

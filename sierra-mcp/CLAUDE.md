@@ -24,7 +24,7 @@ uv run mcp dev src/sierra_mcp/server.py
 When configuring the MCP Inspector UI (because mcp dev's default uv-based spawn
 mangles non-ASCII paths on Windows), point Command at the per-project venv
 python directly:
-- Command: `D:\inversión\sierra-mcp\.venv\Scripts\python.exe`
+- Command: `D:\inversion\sierra-mcp\.venv\Scripts\python.exe`
 - Args: `-m sierra_mcp.server`
 
 No test suite or linter is configured yet.

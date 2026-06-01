@@ -1,12 +1,9 @@
-# sierra-mcp
+# trading-brain
 
 Personal trading copilot built as a set of MCP servers for Claude. Connects
 Claude to **Sierra Chart** (live market data and account state) and **Discord**
-(a trading-education community used as a knowledge source) so conversations can
-reason over both at once.
-
-> Repo named `sierra-mcp` for historical reasons — it actually hosts multiple
-> MCP servers under one umbrella.
+(a trading-education community used as a knowledge source), with a local
+SQLite journal for persistent memory.
 
 ## What's inside
 
@@ -14,9 +11,11 @@ reason over both at once.
 |---|---|---|
 | **sierra-mcp** | Sierra Chart bridge (futures: ES, NQ, MES, MNQ on CME) | `ping_sierra`, `get_quote`, `get_recent_bars` (DTC), `get_recent_bars_scid` (local file), `list_trade_accounts`, `get_account_balance`, `get_positions` |
 | **discord-mcp** | Read-only Discord channels as a knowledge base | `list_servers`, `list_channels`, `read_recent_messages`, `search_messages`, `fetch_image`, `list_groups`, `read_group` |
+| **journal-mcp** | Local SQLite memory for observations, trades, and reviews | `log_observation`, `log_trade`, `update_trade`, `search_journal`, `list_recent`, `daily_summary` |
 
-Both are read-only today. Order placement and any writing-back is deliberately
-out of scope until the read path is validated end-to-end.
+Sierra and Discord are read-only. journal-mcp is the first write-capable MCP,
+but it only writes to a local SQLite journal database. Order placement is still
+out of scope until the read path and journal workflows are validated end-to-end.
 
 ## How they talk to Sierra Chart
 
@@ -47,12 +46,13 @@ Two paths, complementary:
 
 ```powershell
 # Clone
-git clone https://github.com/AndreuCrespo/sierra-mcp.git D:\inversión
-cd D:\inversión
+git clone https://github.com/AndreuCrespo/trading-brain.git D:\inversion
+cd D:\inversion
 
 # Install each MCP (creates per-project .venv + uv.lock)
 cd sierra-mcp  ; uv sync ; cd ..
 cd discord-mcp ; uv sync ; cd ..
+cd journal-mcp ; uv sync ; cd ..
 ```
 
 Per project, copy `.env.example` → `.env` and fill in secrets. discord-mcp's
@@ -69,6 +69,11 @@ SIERRA_DTC_HISTORICAL_PORT=11098
 SIERRA_DATA_PATH=D:\SierraChart\Data
 ```
 
+journal-mcp env vars (optional):
+```
+JOURNAL_DB_PATH=D:\inversion\journal-mcp\data\journal.db
+```
+
 ## Wiring into Claude Desktop
 
 Edit `%APPDATA%\Claude\claude_desktop_config.json` and add:
@@ -77,12 +82,16 @@ Edit `%APPDATA%\Claude\claude_desktop_config.json` and add:
 {
   "mcpServers": {
     "sierra": {
-      "command": "D:\\inversión\\sierra-mcp\\.venv\\Scripts\\python.exe",
-      "args": ["D:\\inversión\\sierra-mcp\\src\\sierra_mcp\\server.py"]
+      "command": "D:\\inversion\\sierra-mcp\\.venv\\Scripts\\python.exe",
+      "args": ["D:\\inversion\\sierra-mcp\\src\\sierra_mcp\\server.py"]
     },
     "discord": {
-      "command": "D:\\inversión\\discord-mcp\\.venv\\Scripts\\python.exe",
-      "args": ["D:\\inversión\\discord-mcp\\src\\discord_mcp\\server.py"]
+      "command": "D:\\inversion\\discord-mcp\\.venv\\Scripts\\python.exe",
+      "args": ["D:\\inversion\\discord-mcp\\src\\discord_mcp\\server.py"]
+    },
+    "journal": {
+      "command": "D:\\inversion\\journal-mcp\\.venv\\Scripts\\python.exe",
+      "args": ["D:\\inversion\\journal-mcp\\src\\journal_mcp\\server.py"]
     }
   }
 }
@@ -99,15 +108,15 @@ appear under Configuración → Desarrollador.
 ## Dev workflow (MCP Inspector)
 
 ```powershell
-cd sierra-mcp          # or discord-mcp
+cd sierra-mcp          # or discord-mcp / journal-mcp
 uv run mcp dev src/sierra_mcp/server.py
 ```
 
 In the inspector UI, point Command at the per-project venv python and Args at
 the file path (same reason as Claude Desktop):
 
-- Command: `D:\inversión\sierra-mcp\.venv\Scripts\python.exe`
-- Arguments: `D:\inversión\sierra-mcp\src\sierra_mcp\server.py`
+- Command: `D:\inversion\sierra-mcp\.venv\Scripts\python.exe`
+- Arguments: `D:\inversion\sierra-mcp\src\sierra_mcp\server.py`
 
 ## Discord channel taxonomy
 
@@ -124,6 +133,23 @@ read_group(server="...", group="post", limit_per_channel=5)
 #   writes-up all at once
 ```
 
+## Journal memory
+
+journal-mcp stores local memory in SQLite (default:
+`journal-mcp/data/journal.db`, gitignored). It is intentionally simple:
+observations and trades, searchable by text, symbol, tags, dates, and kind.
+
+Use it for market observations, trade plans, post-mortems, recurring mistakes,
+rules, and daily/weekly review raw material.
+
+Example flow:
+
+```
+log_observation(content="MES rejected VWAP after postmarket context", tags=["vwap", "post"], symbol="MES")
+log_trade(symbol="MESM26-CME", side="long", entry_price=7590.5, quantity=1, account="Sim1", setup="EF")
+daily_summary(date="2026-06-01")
+```
+
 ## Example conversations
 
 > *"Read the last 5 messages from the `post` group on Estudio trading donAdri,
@@ -136,10 +162,14 @@ read_group(server="...", group="post", limit_per_channel=5)
 > *"Walk me through `📘15-theplan` and tell me how donAdri's system handles
 > position sizing."*
 
+> *"Log today's main mistake as a journal observation tagged `risk` and
+> `discipline`, then show me the last 10 journal entries for MES."*
+
 ## Status & known limitations
 
 - ✅ `ping_sierra`, `get_recent_bars_scid` validated against live data
 - ✅ Discord tools all validated against the live community server
+- ✅ journal-mcp smoke-tested locally against SQLite
 - ⚠️ `get_quote` / `get_recent_bars` (DTC) return *"Request is not authorized"*
   on the current account despite SP11 + Denali active. Workaround in place via
   `get_recent_bars_scid`; investigating with Sierra support.
@@ -150,8 +180,8 @@ read_group(server="...", group="post", limit_per_channel=5)
 ## Roadmap
 
 Short term, in priority order:
-1. `journal-mcp` — SQLite-backed persistent memory so Claude can write
-   observations / trade logs / post-mortems and recall them in future sessions.
+1. Use journal-mcp in real Claude Desktop conversations and refine the schema
+   from actual workflow pain.
 2. Indicators on top of `.scid` bars: VWAP, ATR, RVOL, market profile, delta.
 3. Resolve DTC market-data authorization (or work around with depth/quote
    readers off the local files).
@@ -163,7 +193,7 @@ backtest framework over `.scid`.
 ## Layout
 
 ```
-inversión/
+inversion/
 ├── README.md
 ├── .gitignore
 ├── sierra-mcp/
@@ -184,5 +214,13 @@ inversión/
         ├── server.py
         ├── client.py        # Discord REST API client
         ├── groups.py        # YAML loader + channel matcher
+        └── config.py
+└── journal-mcp/
+    ├── pyproject.toml
+    ├── uv.lock
+    ├── data/                # local SQLite DBs, gitignored
+    └── src/journal_mcp/
+        ├── server.py        # FastMCP tools
+        ├── db.py            # SQLite schema/helpers
         └── config.py
 ```
