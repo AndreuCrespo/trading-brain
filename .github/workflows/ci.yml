@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  smoke:
+    name: MCP smoke tests
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Check local secrets are not tracked
+        shell: pwsh
+        run: |
+          $bad = git ls-files | Where-Object {
+            $_ -match '(^|/)\.env$' -or
+            $_ -match '\.db$' -or
+            $_ -match '\.db-shm$' -or
+            $_ -match '\.db-wal$'
+          }
+          if ($bad) {
+            Write-Error "Tracked local-only files: $($bad -join ', ')"
+            exit 1
+          }
+
+      - name: Sierra MCP import check
+        shell: pwsh
+        working-directory: sierra-mcp
+        run: |
+          uv sync --frozen
+          uv run python -m compileall src
+          uv run python -c "import sierra_mcp.server; print('sierra import ok')"
+
+      - name: Discord MCP import check
+        shell: pwsh
+        working-directory: discord-mcp
+        run: |
+          uv sync --frozen
+          uv run python -m compileall src
+          uv run python -c "import discord_mcp.server; print('discord import ok')"
+
+      - name: Journal MCP smoke test
+        shell: pwsh
+        working-directory: journal-mcp
+        run: |
+          uv sync --frozen
+          uv run python -m compileall src
+          $env:JOURNAL_DB_PATH = Join-Path $env:RUNNER_TEMP "journal-smoke.db"
+          uv run python -c "from journal_mcp.server import log_observation, log_trade, update_trade, search_journal; o=log_observation('CI smoke observation', tags=['ci'], symbol='MES'); assert o['ok']; t=log_trade('MESM26-CME','long',7590.5,tags=['ci']); assert t['ok']; u=update_trade(t['trade']['id'], exit_price=7591.0, realized_r=0.25); assert u['ok'] and u['trade']['status']=='closed'; r=search_journal(tags=['ci']); assert r['ok'] and r['count'] == 2; print('journal smoke ok')"
