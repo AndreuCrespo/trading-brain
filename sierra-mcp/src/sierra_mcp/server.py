@@ -3,6 +3,7 @@ import logging
 import os
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 # When loaded by `mcp dev` (which imports this file by path, not as a package),
@@ -38,6 +39,10 @@ INTERVAL_SECONDS = {
     "4h": 14400,
     "1d": 86400,
 }
+
+
+def datetime_from_unix(ts: float) -> str:
+    return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
 
 
 @mcp.tool()
@@ -280,6 +285,70 @@ async def get_recent_bars_scid(
         "ticks_scanned": len(records),
         "bars": bars,
     }
+
+
+@mcp.tool()
+async def get_latest_tick_scid(symbol: str) -> dict:
+    """Read the latest tick/record from Sierra Chart's local .scid file.
+
+    This is the practical near-real-time path when Sierra's DTC market data is
+    blocked by exchange restrictions. It returns the last trade price and file
+    freshness. The delay is Sierra's file flush cadence, usually seconds.
+    """
+    config = Config.from_env()
+    scid_path = os.path.join(config.data_path, f"{symbol}.scid")
+    if not os.path.exists(scid_path):
+        return {"ok": False, "error": f"file not found: {scid_path}"}
+
+    record = await asyncio.to_thread(scid_reader.read_last_record, scid_path)
+    status = await asyncio.to_thread(scid_reader.file_status, scid_path)
+    if record is None:
+        return {"ok": False, "error": f"no records in file: {scid_path}"}
+
+    now = time.time()
+    tick_age_seconds = max(0.0, now - record.unix_time)
+    file_age_seconds = max(0.0, now - status["modified_unix"])
+    return {
+        "ok": True,
+        "symbol": symbol,
+        "source": scid_path,
+        "price": record.close,
+        "time": datetime_from_unix(record.unix_time),
+        "volume": record.volume,
+        "num_trades": record.num_trades,
+        "bid_volume": record.bid_volume,
+        "ask_volume": record.ask_volume,
+        "tick_age_seconds": round(tick_age_seconds, 3),
+        "file_age_seconds": round(file_age_seconds, 3),
+        "record_count": status["record_count"],
+        "file_modified_time": status["modified_time"],
+    }
+
+
+@mcp.tool()
+async def get_scid_status(symbol: str) -> dict:
+    """Check whether Sierra's local .scid file for a symbol is being updated."""
+    config = Config.from_env()
+    scid_path = os.path.join(config.data_path, f"{symbol}.scid")
+    if not os.path.exists(scid_path):
+        return {"ok": False, "error": f"file not found: {scid_path}"}
+
+    record = await asyncio.to_thread(scid_reader.read_last_record, scid_path)
+    status = await asyncio.to_thread(scid_reader.file_status, scid_path)
+    now = time.time()
+    out = {
+        "ok": True,
+        "symbol": symbol,
+        **status,
+        "file_age_seconds": round(max(0.0, now - status["modified_unix"]), 3),
+    }
+    if record is not None:
+        out.update({
+            "last_tick_time": datetime_from_unix(record.unix_time),
+            "last_price": record.close,
+            "tick_age_seconds": round(max(0.0, now - record.unix_time), 3),
+        })
+    return out
 
 
 async def _collect_multi(

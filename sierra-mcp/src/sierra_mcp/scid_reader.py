@@ -12,6 +12,7 @@ For tick records (Intraday Data Storage Time Unit = 1 Tick) all OHLC fields
 hold the same trade price.
 """
 
+import os
 import struct
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -67,6 +68,47 @@ def read_tail_records(path: str, max_records: int) -> list[TickRecord]:
             bid_volume=bvol, ask_volume=avol,
         ))
     return records
+
+
+def read_last_record(path: str) -> TickRecord | None:
+    """Read the last complete record from a .scid file."""
+    with open(path, "rb") as f:
+        f.seek(0, 2)
+        file_size = f.tell()
+        data_bytes = file_size - HEADER_SIZE
+        if data_bytes < RECORD_SIZE:
+            return None
+        n_in_file = data_bytes // RECORD_SIZE
+        start = HEADER_SIZE + (n_in_file - 1) * RECORD_SIZE
+        f.seek(start)
+        chunk = f.read(RECORD_SIZE)
+
+    sc_dt, o, h, l, c, nt, vol, bvol, avol = RECORD_STRUCT.unpack(chunk)
+    return TickRecord(
+        sc_datetime=sc_dt,
+        unix_time=sc_datetime_to_unix(sc_dt),
+        open=o,
+        high=h,
+        low=l,
+        close=c,
+        num_trades=nt,
+        volume=vol,
+        bid_volume=bvol,
+        ask_volume=avol,
+    )
+
+
+def file_status(path: str) -> dict:
+    """Return lightweight status for a .scid file."""
+    stat = os.stat(path)
+    data_bytes = max(0, stat.st_size - HEADER_SIZE)
+    return {
+        "path": path,
+        "size_bytes": stat.st_size,
+        "record_count": data_bytes // RECORD_SIZE,
+        "modified_unix": stat.st_mtime,
+        "modified_time": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+    }
 
 
 def aggregate_to_bars(records: list[TickRecord], interval_seconds: int) -> list[dict]:

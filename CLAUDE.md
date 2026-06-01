@@ -126,6 +126,8 @@ All `.env` files are local secrets/config and are gitignored.
 - `get_quote`
 - `get_recent_bars`
 - `get_recent_bars_scid`
+- `get_latest_tick_scid`
+- `get_scid_status`
 - `list_trade_accounts`
 - `get_account_balance`
 - `get_positions`
@@ -142,6 +144,8 @@ Known Sierra state:
 
 - `ping_sierra` works when Sierra Chart DTC is enabled.
 - `get_recent_bars_scid` is validated and is the reliable market-data path today.
+- `get_latest_tick_scid` and `get_scid_status` provide near-real-time last tick
+  and file freshness from Sierra's local `.scid` file.
 - `get_quote` and DTC historical bars have returned `Request is not authorized` on the current Sierra/Denali setup. Do not assume DTC market data is fixed.
 - `get_account_balance` and `get_positions` were partially tested; Sim accounts returned empty/timeout before opening test trades.
 

@@ -9,7 +9,7 @@ SQLite journal for persistent memory.
 
 | MCP | Purpose | Tools |
 |---|---|---|
-| **sierra-mcp** | Sierra Chart bridge (futures: ES, NQ, MES, MNQ on CME) | `ping_sierra`, `get_quote`, `get_recent_bars` (DTC), `get_recent_bars_scid` (local file), `list_trade_accounts`, `get_account_balance`, `get_positions` |
+| **sierra-mcp** | Sierra Chart bridge (futures: ES, NQ, MES, MNQ on CME) | `ping_sierra`, `get_quote`, `get_recent_bars` (DTC), `get_recent_bars_scid` (local file), `get_latest_tick_scid`, `get_scid_status`, `list_trade_accounts`, `get_account_balance`, `get_positions` |
 | **discord-mcp** | Read-only Discord channels as a knowledge base | `list_servers`, `list_channels`, `read_recent_messages`, `search_messages`, `fetch_image`, `list_groups`, `read_group` |
 | **journal-mcp** | Local SQLite memory for observations, trades, and reviews | `log_observation`, `log_trade`, `update_trade`, `search_journal`, `list_recent`, `daily_summary` |
 
@@ -25,10 +25,11 @@ Two paths, complementary:
    JSON over Sierra's local DTC server. Requires Denali Exchange Data Feed +
    Service Package 11+ for full market-data redistribution. SC Data
    (free/delayed) refuses DTC redistribution.
-2. **`.scid` file reader** (`get_recent_bars_scid`) — reads Sierra's local
-   tick-storage files directly from disk, aggregates ticks into bars on the
-   fly. Works regardless of DTC permissions. ~Seconds of lag from real-time
-   (file flush cadence).
+2. **`.scid` file reader** (`get_recent_bars_scid`, `get_latest_tick_scid`) —
+   reads Sierra's local tick-storage files directly from disk, aggregates ticks
+   into bars on the fly, and can read the latest tick with file freshness.
+   Works regardless of DTC permissions. ~Seconds of lag from real-time (file
+   flush cadence).
 
 ## Requirements
 
@@ -168,6 +169,7 @@ daily_summary(date="2026-06-01")
 ## Status & known limitations
 
 - ✅ `ping_sierra`, `get_recent_bars_scid` validated against live data
+- ✅ `get_latest_tick_scid` smoke-tested on MESM26-CME with ~1-2s file/tick age
 - ✅ Discord tools all validated against the live community server
 - ✅ journal-mcp smoke-tested locally against SQLite
 - ⚠️ `get_quote` / `get_recent_bars` (DTC) return *"Request is not authorized"*
@@ -182,9 +184,10 @@ daily_summary(date="2026-06-01")
 Short term, in priority order:
 1. Use journal-mcp in real Claude Desktop conversations and refine the schema
    from actual workflow pain.
-2. Indicators on top of `.scid` bars: VWAP, ATR, RVOL, market profile, delta.
-3. Resolve DTC market-data authorization (or work around with depth/quote
-   readers off the local files).
+2. Indicators/context on top of `.scid` bars: VWAP, ATR, RVOL, market profile,
+   delta, `get_futures_context`.
+3. If true bid/ask/DOM real-time is required, build an ACSIL bridge inside
+   Sierra Chart that writes ticks/quotes/depth to a local file or socket.
 4. Order placement (sim first, with explicit confirmation per call).
 
 Longer term: more data sources as separate MCPs (SEC EDGAR, FRED, news), simple
