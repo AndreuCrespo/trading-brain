@@ -8,18 +8,24 @@ An MCP (Model Context Protocol) server that bridges Claude to **Sierra Chart** v
 
 ## Commands
 
+Project uses **uv** for env + lockfile management. The `.venv` is per-project.
+
 ```powershell
-# one-time setup (from project root)
-python -m venv .venv
-.venv\Scripts\Activate.ps1
-pip install -e .
+# one-time setup (from project root) — installs deps from uv.lock into .venv
+uv sync
 
 # run the MCP server directly (stdio transport — for debugging)
-python -m sierra_mcp.server
+uv run python -m sierra_mcp.server
 
-# inspect with the MCP CLI
-mcp dev src/sierra_mcp/server.py
+# inspect with the MCP CLI inspector
+uv run mcp dev src/sierra_mcp/server.py
 ```
+
+When configuring the MCP Inspector UI (because mcp dev's default uv-based spawn
+mangles non-ASCII paths on Windows), point Command at the per-project venv
+python directly:
+- Command: `D:\inversión\sierra-mcp\.venv\Scripts\python.exe`
+- Args: `-m sierra_mcp.server`
 
 No test suite or linter is configured yet.
 

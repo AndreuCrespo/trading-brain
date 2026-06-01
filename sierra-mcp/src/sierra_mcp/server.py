@@ -1,7 +1,15 @@
 import asyncio
 import logging
 import os
+import sys
 import time
+from pathlib import Path
+
+# When loaded by `mcp dev` (which imports this file by path, not as a package),
+# ensure the parent `src/` is on sys.path so the sierra_mcp.* imports resolve.
+_src_dir = Path(__file__).resolve().parents[1]
+if str(_src_dir) not in sys.path:
+    sys.path.insert(0, str(_src_dir))
 
 from mcp.server.fastmcp import FastMCP
 

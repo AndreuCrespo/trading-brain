@@ -1,0 +1,44 @@
+# Channel taxonomy for Discord servers the bot reads.
+#
+# Each group lists channels by exact `names` and/or `prefix` patterns.
+# A channel that matches any rule belongs to that group. A channel can belong
+# to multiple groups.
+#
+# Edit this file when new channels appear in the server — no code changes needed.
+
+groups:
+  prep:
+    description: "Watchlists y preparación pre-mercado (lo que esperas para el día)"
+    prefix: ["prep-"]
+
+  post:
+    description: "Postmarket y setups del día (lo que pasó)"
+    names:
+      - "postmarket-futuros"
+      - "postmarket-stocks"
+      - "setups-database"
+      - "writes-up"
+
+  recursos:
+    description: "Herramientas, playbook, journal, recursos, glosario"
+    names:
+      - "📚playbook-de-setups✅"
+      - "📒recursos✅"
+      - "📒recursos-2"
+      - "💶the-100k-journal✅"
+      - "💻backtest✅"
+      - "📙0-focusfriday✅"
+      - "📙0-actualizaciones✅"
+      - "diccionario"
+
+  fondeo:
+    description: "Curso de fondeo / funded accounts (📕 1-3)"
+    prefix: ["📕"]
+
+  futuros:
+    description: "Curso de futuros (📘 1-15)"
+    prefix: ["📘"]
+
+  stocks:
+    description: "Curso de stocks (📗)"
+    prefix: ["📗"]

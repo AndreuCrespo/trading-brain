@@ -1,11 +1,21 @@
+import asyncio
 import logging
+import sys
+from pathlib import Path
 from urllib.parse import urlparse
+
+# When loaded by `mcp dev` (which imports this file by path, not as a package),
+# ensure the parent `src/` is on sys.path so the discord_mcp.* imports resolve.
+_src_dir = Path(__file__).resolve().parents[1]
+if str(_src_dir) not in sys.path:
+    sys.path.insert(0, str(_src_dir))
 
 import httpx
 from mcp.server.fastmcp import FastMCP, Image
 
 from discord_mcp.client import DiscordClient
 from discord_mcp.config import Config
+from discord_mcp.groups import channels_for_group, load_groups
 
 logging.basicConfig(level=logging.INFO)
 
@@ -230,6 +240,122 @@ async def fetch_image(url: str):
         return {"ok": False, "error": f"HTTP {r.status_code} fetching image"}
 
     return Image(data=r.content, format=fmt)
+
+
+@mcp.tool()
+async def list_groups(server: str) -> dict:
+    """List channel groups (taxonomy) defined in groups.yml and which channels match.
+
+    Useful to understand the structure of the knowledge base at a glance and to
+    pick a group for read_group. Groups are domain categories like prep / post /
+    fondeo / futuros / stocks / recursos.
+
+    server: server name or guild ID.
+    """
+    rules = load_groups()
+    if not rules:
+        return {"ok": False, "error": "no groups.yml found or it is empty"}
+
+    config = Config.from_env()
+    async with DiscordClient(config) as client:
+        guild_id = await _resolve_guild_id(client, server)
+        if guild_id is None:
+            return {"ok": False, "error": f"server not found: {server}"}
+        all_channels = await client.get_channels(guild_id)
+        text_channels = [c for c in all_channels if c.get("type") in TEXT_CHANNEL_TYPES]
+
+        groups_out = []
+        seen_ids: set[str] = set()
+        for rule in rules:
+            matched = [c for c in text_channels if rule.matches(c.get("name") or "")]
+            seen_ids.update(c.get("id") for c in matched if c.get("id"))
+            groups_out.append({
+                "name": rule.name,
+                "description": rule.description,
+                "channel_count": len(matched),
+                "channels": [{"id": c.get("id"), "name": c.get("name")} for c in matched],
+            })
+
+        ungrouped = [
+            {"id": c.get("id"), "name": c.get("name")}
+            for c in text_channels
+            if c.get("id") not in seen_ids
+        ]
+
+        return {
+            "ok": True,
+            "server_id": guild_id,
+            "groups": groups_out,
+            "ungrouped_count": len(ungrouped),
+            "ungrouped": ungrouped,
+        }
+
+
+@mcp.tool()
+async def read_group(
+    server: str,
+    group: str,
+    limit_per_channel: int = 10,
+) -> dict:
+    """Read recent messages from every channel in a group, in parallel.
+
+    Use this to grab a snapshot of a whole category at once — e.g. the latest
+    activity across all `prep-*` channels, or the most recent posts in every
+    `📘futuros` curso channel.
+
+    server: server name or guild ID.
+    group: one of the group names from groups.yml (call list_groups to discover).
+    limit_per_channel: messages per channel (max 100, default 10).
+    """
+    rules = load_groups()
+    rule = next((r for r in rules if r.name == group), None)
+    if rule is None:
+        return {
+            "ok": False,
+            "error": f"unknown group '{group}'. Available: {[r.name for r in rules]}",
+        }
+
+    config = Config.from_env()
+    async with DiscordClient(config) as client:
+        guild_id = await _resolve_guild_id(client, server)
+        if guild_id is None:
+            return {"ok": False, "error": f"server not found: {server}"}
+
+        all_channels = await client.get_channels(guild_id)
+        matched = channels_for_group(group, all_channels)
+        if not matched:
+            return {
+                "ok": True,
+                "group": group,
+                "channel_count": 0,
+                "channels": [],
+            }
+
+        async def fetch(ch: dict) -> dict:
+            ch_id = ch.get("id")
+            try:
+                msgs = await client.get_messages(ch_id, limit=limit_per_channel)
+                return {
+                    "channel": ch.get("name"),
+                    "channel_id": ch_id,
+                    "messages": [_format_message(m) for m in msgs],
+                }
+            except Exception as exc:
+                return {
+                    "channel": ch.get("name"),
+                    "channel_id": ch_id,
+                    "error": str(exc),
+                }
+
+        results = await asyncio.gather(*(fetch(c) for c in matched))
+
+        return {
+            "ok": True,
+            "group": group,
+            "description": rule.description,
+            "channel_count": len(results),
+            "channels": results,
+        }
 
 
 def main() -> None:
