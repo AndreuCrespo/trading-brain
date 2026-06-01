@@ -35,6 +35,126 @@ def _clean_text(value: str | None) -> str | None:
     return stripped or None
 
 
+@mcp.prompt(
+    name="premarket_review",
+    title="Premarket Review",
+    description="Build a futures premarket plan from Discord prep, Sierra context, and journal memory.",
+)
+def premarket_review(
+    server: str = "Estudio trading donAdri",
+    futures_symbol: str = "MESM26-CME",
+    nasdaq_symbol: str = "MNQM26-CME",
+) -> str:
+    """Prompt Claude to run the premarket workflow across MCPs."""
+    return f"""
+Act as my futures premarket analyst.
+
+Use the available MCP tools in this order:
+
+1. Discord:
+   - Read the `prep` group from server `{server}`.
+   - Prioritize futures-related prep/watchlist content.
+
+2. Sierra:
+   - Call `get_futures_context` for `{futures_symbol}` with interval `1m`.
+   - Call `get_futures_context` for `{nasdaq_symbol}` with interval `1m`.
+
+3. Journal:
+   - Search recent journal entries for tags: `premarket`, `plan`, `futures`, `risk`.
+   - Look for recurring mistakes or rules that should affect today's plan.
+
+Return:
+- Market state for ES/MES and NQ/MNQ.
+- Key levels and conditions from Discord prep.
+- 3-5 scenarios for the session.
+- Risk notes / things to avoid.
+- A concise plan I can read before trading.
+
+Then ask me whether to save the final plan to the journal. If I say yes, use
+`log_observation` with tags `premarket`, `futures`, `plan`.
+""".strip()
+
+
+@mcp.prompt(
+    name="postmarket_review",
+    title="Postmarket Review",
+    description="Review the trading day using Discord postmarket, Sierra context, screenshots, and journal memory.",
+)
+def postmarket_review(
+    server: str = "Estudio trading donAdri",
+    futures_symbol: str = "MESM26-CME",
+    nasdaq_symbol: str = "MNQM26-CME",
+) -> str:
+    """Prompt Claude to run the postmarket workflow across MCPs."""
+    return f"""
+Act as my futures postmarket reviewer.
+
+Use the available MCP tools in this order:
+
+1. Discord:
+   - Read the `post` group from server `{server}`.
+   - If messages have important chart screenshots, fetch and inspect the images.
+
+2. Sierra:
+   - Call `get_futures_context` for `{futures_symbol}` with interval `1m`.
+   - Call `get_futures_context` for `{nasdaq_symbol}` with interval `1m`.
+
+3. Journal:
+   - Search today's journal entries and recent entries tagged `mistake`,
+     `review`, `risk`, `futures`, and `postmarket`.
+
+Return:
+- What actually happened in ES/MES and NQ/MNQ.
+- Which Discord postmarket lessons/setups matter most.
+- Whether the market respected or invalidated the premarket plan.
+- My likely mistakes/opportunities based on journal history.
+- 3 concrete lessons for tomorrow.
+
+Then ask me whether to save a postmarket observation. If I say yes, use
+`log_observation` with tags `postmarket`, `futures`, `review`.
+""".strip()
+
+
+@mcp.prompt(
+    name="weekly_trading_review",
+    title="Weekly Trading Review",
+    description="Summarize the week using journal entries, Discord write-ups, and market context.",
+)
+def weekly_trading_review(
+    server: str = "Estudio trading donAdri",
+    futures_symbol: str = "MESM26-CME",
+    nasdaq_symbol: str = "MNQM26-CME",
+) -> str:
+    """Prompt Claude to run a weekly review across MCPs."""
+    return f"""
+Act as my weekly trading reviewer.
+
+Use the available MCP tools:
+
+1. Journal:
+   - Search this week's trades, observations, mistakes, and reviews.
+   - Group findings by setup, risk, execution, psychology, and market context.
+
+2. Discord:
+   - Read the `post` group from `{server}`.
+   - Read recent `writes-up` / weekly recap content if available.
+
+3. Sierra:
+   - Call `get_futures_context` for `{futures_symbol}` and `{nasdaq_symbol}`
+     to anchor the current market regime.
+
+Return:
+- Weekly performance narrative.
+- Best trade / worst trade / most repeated mistake.
+- What the donAdri Discord content emphasized this week.
+- What should change next week.
+- 3 rules to keep visible during the next sessions.
+
+Then ask me whether to save the weekly review. If I say yes, use
+`log_observation` with tags `weekly-review`, `futures`, `process`.
+""".strip()
+
+
 @mcp.tool()
 def log_observation(
     content: str,

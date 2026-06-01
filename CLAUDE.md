@@ -209,6 +209,12 @@ Use `groups.yml` for channel taxonomy changes. Do not hardcode channel names in 
 - `list_recent`
 - `daily_summary`
 
+It also exposes these MCP prompts:
+
+- `premarket_review`
+- `postmarket_review`
+- `weekly_trading_review`
+
 Key files:
 
 - `server.py`: FastMCP tools for writing and searching memory.
@@ -227,6 +233,7 @@ Validated smoke path:
 - close/update trade
 - search by query/tag
 - daily summary
+- prompt text generation for premarket/postmarket/weekly workflows
 
 ## Windows And Path Notes
 

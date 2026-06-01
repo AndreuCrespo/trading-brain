@@ -11,7 +11,7 @@ SQLite journal for persistent memory.
 |---|---|---|
 | **sierra-mcp** | Sierra Chart bridge (futures: ES, NQ, MES, MNQ on CME) | `ping_sierra`, `get_quote`, `get_recent_bars` (DTC), `get_recent_bars_scid` (local file), `get_latest_tick_scid`, `get_scid_status`, `get_futures_context`, `list_trade_accounts`, `get_account_balance`, `get_positions` |
 | **discord-mcp** | Read-only Discord channels as a knowledge base | `list_servers`, `list_channels`, `read_recent_messages`, `search_messages`, `fetch_image`, `list_groups`, `read_group` |
-| **journal-mcp** | Local SQLite memory for observations, trades, and reviews | `log_observation`, `log_trade`, `update_trade`, `search_journal`, `list_recent`, `daily_summary` |
+| **journal-mcp** | Local SQLite memory for observations, trades, and reviews | Tools: `log_observation`, `log_trade`, `update_trade`, `search_journal`, `list_recent`, `daily_summary`. Prompts: `premarket_review`, `postmarket_review`, `weekly_trading_review` |
 
 Sierra and Discord are read-only. journal-mcp is the first write-capable MCP,
 but it only writes to a local SQLite journal database. Order placement is still
@@ -147,6 +147,13 @@ observations and trades, searchable by text, symbol, tags, dates, and kind.
 Use it for market observations, trade plans, post-mortems, recurring mistakes,
 rules, and daily/weekly review raw material.
 
+It also exposes prompt workflows that orchestrate the other MCPs from Claude
+Desktop:
+
+- `premarket_review`: reads Discord `prep`, Sierra futures context, and journal memory.
+- `postmarket_review`: reads Discord `post`, chart screenshots, Sierra context, and journal memory.
+- `weekly_trading_review`: summarizes the week from journal + Discord write-ups + current futures context.
+
 Example flow:
 
 ```
@@ -169,6 +176,9 @@ daily_summary(date="2026-06-01")
 
 > *"Log today's main mistake as a journal observation tagged `risk` and
 > `discipline`, then show me the last 10 journal entries for MES."*
+
+> Run the `premarket_review` prompt before the session, then save the final plan
+> to the journal if it looks right.
 
 ## Status & known limitations
 
