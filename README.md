@@ -9,13 +9,13 @@ SQLite journal for persistent memory.
 
 | MCP | Purpose | Tools |
 |---|---|---|
-| **sierra-mcp** | Sierra Chart bridge (futures: ES, NQ, MES, MNQ on CME) | `ping_sierra`, `get_quote`, `get_recent_bars` (DTC), `get_recent_bars_scid` (local file), `get_latest_tick_scid`, `get_scid_status`, `get_futures_context`, `list_trade_accounts`, `get_account_balance`, `get_positions`, `get_open_orders`, `place_sim_market_order` |
+| **sierra-mcp** | Sierra Chart bridge (futures: ES, NQ, MES, MNQ on CME) | `ping_sierra`, `get_quote`, `get_recent_bars` (DTC), `get_recent_bars_scid` (local file), `get_latest_tick_scid`, `get_scid_status`, `get_futures_context`, `list_trade_accounts`, `get_account_balance`, `get_positions`, `get_open_orders`, `place_sim_market_order`, `close_sim_position` |
 | **discord-mcp** | Read-only Discord channels as a knowledge base | `list_servers`, `list_channels`, `read_recent_messages`, `search_messages`, `fetch_image`, `list_groups`, `read_group` |
 | **journal-mcp** | Local SQLite memory for observations, trades, and reviews | Tools: `log_observation`, `log_trade`, `update_trade`, `search_journal`, `list_recent`, `daily_summary`, `list_workflows`, `premarket_review`, `postmarket_review`, `weekly_trading_review` |
 
 Discord is read-only. journal-mcp writes only to a local SQLite journal database.
-sierra-mcp includes a tightly-guarded simulation-only market order tool. Real
-order placement is still out of scope.
+sierra-mcp includes tightly-guarded simulation/evaluator-only order tools. Real
+money order placement is out of scope.
 
 ## How they talk to Sierra Chart
 

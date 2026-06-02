@@ -134,6 +134,7 @@ All `.env` files are local secrets/config and are gitignored.
 - `get_positions`
 - `get_open_orders`
 - `place_sim_market_order`
+- `close_sim_position`
 
 Key files:
 
@@ -160,6 +161,9 @@ Known Sierra state:
   `MESM26` / `MNQM26` for Trading Evaluator style), max quantity 1, rationale
   required, `confirm=True` required, and the account must be listed in local
   `sierra-mcp/safety.json`.
+- `close_sim_position` is the preferred semantic tool for natural-language
+  requests like "close MES"; it reads the current position first, previews the
+  opposite market order, and still requires explicit confirmation.
   It is for Sierra simulated/evaluator accounts only.
 - `get_account_balance` can return empty on Sim accounts; Sierra may not
   maintain account balances for Trade Simulation Mode accounts.

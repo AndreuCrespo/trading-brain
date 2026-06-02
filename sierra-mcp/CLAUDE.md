@@ -47,7 +47,7 @@ Order tools also require local `safety.json` with `allowed_sim_accounts`; use `s
 
 Three layers, top to bottom:
 
-1. **`server.py`** — `FastMCP` server. Each `@mcp.tool()` is what Claude sees. Tools currently open a fresh `DTCClient`, do their work, and close it in `finally`. This is intentional for the read-only phase; if we add long-lived subscriptions (streaming quotes, position updates), the client should move to module-level lifespan management.
+1. **`server.py`** — `FastMCP` server. Each `@mcp.tool()` is what Claude sees. Tools currently open a fresh `DTCClient`, do their work, and close it in `finally`. Order tools are simulation/evaluator-only and must stay guarded by `safety.json`, symbol allowlists, max quantity, rationale, and explicit confirmation. If we add long-lived subscriptions (streaming quotes, position updates), the client should move to module-level lifespan management.
 
 2. **`dtc_client.py`** — async DTC client over `asyncio.open_connection`. The wire format is JSON objects terminated by `\x00`. The key pattern is **subscribe-then-send**:
    ```python

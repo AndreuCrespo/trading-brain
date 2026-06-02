@@ -182,6 +182,33 @@ def _format_order_update(m: dict) -> dict:
     }
 
 
+def _format_position(m: dict) -> dict:
+    return {
+        "trade_account": m.get("TradeAccount"),
+        "symbol": m.get("Symbol"),
+        "exchange": m.get("Exchange"),
+        "quantity": m.get("Quantity"),
+        "average_price": m.get("AveragePrice"),
+        "position_identifier": m.get("PositionIdentifier"),
+    }
+
+
+def _symbol_aliases(symbol: str) -> set[str]:
+    symbol = symbol.strip().upper()
+    aliases = {symbol}
+    if symbol.endswith("-CME"):
+        aliases.add(symbol.removesuffix("-CME"))
+    else:
+        aliases.add(f"{symbol}-CME")
+    return aliases
+
+
+def _symbols_match(left: str | None, right: str | None) -> bool:
+    if not left or not right:
+        return False
+    return bool(_symbol_aliases(left) & _symbol_aliases(right))
+
+
 def _globex_equity_session_start(last_tick_unix: float) -> float:
     """Approximate CME equity index futures session start in UTC.
 
@@ -660,6 +687,115 @@ async def _collect_multi(
         client.unsubscribe(reject_type)
 
 
+async def _collect_positions(config: Config, trade_account: str = "") -> tuple[bool, list[dict] | str]:
+    client = DTCClient(config.host, config.trading_port, config)
+    try:
+        await client.connect()
+        ok, result = await _collect_multi(
+            client,
+            {
+                "Type": int(MessageType.CURRENT_POSITIONS_REQUEST),
+                "RequestID": 1,
+                "TradeAccount": trade_account,
+            },
+            MessageType.POSITION_UPDATE,
+            MessageType.CURRENT_POSITIONS_REJECT,
+            no_items_key="NoPositions",
+            timeout=10,
+        )
+        if not ok:
+            return False, result
+        return True, [_format_position(m) for m in result]  # type: ignore[union-attr]
+    finally:
+        await client.close()
+
+
+async def _submit_sim_market_order(
+    config: Config,
+    symbol: str,
+    side_norm: str,
+    quantity: int,
+    trade_account: str,
+    rationale: str,
+    open_or_close: OpenCloseTrade,
+    preview: dict,
+) -> dict:
+    client_order_id = f"tb-{int(time.time() * 1000)}-{uuid.uuid4().hex[:8]}"
+    buy_sell = BuySell.BUY if side_norm == "buy" else BuySell.SELL
+
+    client = DTCClient(config.host, config.trading_port, config)
+    try:
+        await client.connect()
+        response_q = client.subscribe(MessageType.ORDER_UPDATE)
+        try:
+            await client.send({
+                "Type": int(MessageType.SUBMIT_NEW_SINGLE_ORDER),
+                "Symbol": symbol,
+                "Exchange": "CME",
+                "ClientOrderID": client_order_id,
+                "OrderType": int(OrderType.MARKET),
+                "BuySell": int(buy_sell),
+                "Price1": 0,
+                "Price2": 0,
+                "TimeInForce": int(TimeInForce.DAY),
+                "GoodTillDateTime": 0,
+                "Quantity": quantity,
+                "TradeAccount": trade_account,
+                "IsAutomatedOrder": 1,
+                "IsParentOrder": 0,
+                "FreeFormText": f"trading-brain sim: {rationale}"[:120],
+                "OpenOrClose": int(open_or_close),
+                "MaxShowQuantity": 0,
+                "Price1AsString": "",
+                "Price2AsString": "",
+                "IntendedPositionQuantity": 0,
+            })
+
+            updates: list[dict] = []
+            deadline = time.time() + 20
+            terminal = False
+            while time.time() < deadline:
+                try:
+                    msg = await asyncio.wait_for(response_q.get(), timeout=deadline - time.time())
+                except asyncio.TimeoutError:
+                    break
+                if msg.get("ClientOrderID") == client_order_id:
+                    updates.append(_format_order_update(msg))
+                    reason = msg.get("OrderUpdateReason")
+                    status = msg.get("OrderStatus")
+                    if status in TERMINAL_ORDER_STATUSES or reason in TERMINAL_ORDER_REASONS:
+                        terminal = True
+                        break
+
+            if not updates:
+                return {
+                    "ok": False,
+                    "error": "order submitted but no matching ORDER_UPDATE received",
+                    "client_order_id": client_order_id,
+                    "preview": preview,
+                }
+
+            last = updates[-1]
+            rejected = last.get("order_update_reason") == 8 or last.get("order_status") == 9
+            return {
+                "ok": not rejected,
+                "client_order_id": client_order_id,
+                "preview": preview,
+                "updates": updates,
+                "last_update": last,
+                "terminal": terminal,
+                "message": (
+                    "terminal order update received"
+                    if terminal
+                    else "order accepted/updated but no terminal fill/cancel/reject received before timeout"
+                ),
+            }
+        finally:
+            client.unsubscribe(MessageType.ORDER_UPDATE)
+    finally:
+        await client.close()
+
+
 @mcp.tool()
 async def list_trade_accounts() -> dict:
     """List trade accounts available on the connected Sierra Chart session.
@@ -745,38 +881,11 @@ async def get_positions(trade_account: str = "") -> dict:
     Quantity is signed: positive = long, negative = short.
     """
     config = Config.from_env()
-    client = DTCClient(config.host, config.trading_port, config)
-    try:
-        await client.connect()
-        ok, result = await _collect_multi(
-            client,
-            {
-                "Type": int(MessageType.CURRENT_POSITIONS_REQUEST),
-                "RequestID": 1,
-                "TradeAccount": trade_account,
-            },
-            MessageType.POSITION_UPDATE,
-            MessageType.CURRENT_POSITIONS_REJECT,
-            no_items_key="NoPositions",
-            timeout=10,
-        )
-        if not ok:
-            return {"ok": False, "reject_reason": result}
-
-        positions = [
-            {
-                "trade_account": m.get("TradeAccount"),
-                "symbol": m.get("Symbol"),
-                "exchange": m.get("Exchange"),
-                "quantity": m.get("Quantity"),
-                "average_price": m.get("AveragePrice"),
-                "position_identifier": m.get("PositionIdentifier"),
-            }
-            for m in result  # type: ignore[union-attr]
-        ]
-        return {"ok": True, "count": len(positions), "positions": positions}
-    finally:
-        await client.close()
+    ok, result = await _collect_positions(config, trade_account)
+    if not ok:
+        return {"ok": False, "reject_reason": result}
+    positions = result  # type: ignore[assignment]
+    return {"ok": True, "count": len(positions), "positions": positions}
 
 
 @mcp.tool()
@@ -873,80 +982,134 @@ async def place_sim_market_order(
             "preview": preview,
         }
 
-    client_order_id = f"tb-{int(time.time() * 1000)}-{uuid.uuid4().hex[:8]}"
-    buy_sell = BuySell.BUY if side_norm == "buy" else BuySell.SELL
+    return await _submit_sim_market_order(
+        config,
+        symbol,
+        side_norm,
+        quantity,
+        trade_account,
+        rationale,
+        OpenCloseTrade.UNSPECIFIED,
+        preview,
+    )
 
-    client = DTCClient(config.host, config.trading_port, config)
-    try:
-        await client.connect()
-        response_q = client.subscribe(MessageType.ORDER_UPDATE)
-        try:
-            await client.send({
-                "Type": int(MessageType.SUBMIT_NEW_SINGLE_ORDER),
-                "Symbol": symbol,
-                "Exchange": "CME",
-                "ClientOrderID": client_order_id,
-                "OrderType": int(OrderType.MARKET),
-                "BuySell": int(buy_sell),
-                "Price1": 0,
-                "Price2": 0,
-                "TimeInForce": int(TimeInForce.DAY),
-                "GoodTillDateTime": 0,
-                "Quantity": quantity,
-                "TradeAccount": trade_account,
-                "IsAutomatedOrder": 1,
-                "IsParentOrder": 0,
-                "FreeFormText": f"trading-brain sim: {rationale}"[:120],
-                "OpenOrClose": int(OpenCloseTrade.UNSPECIFIED),
-                "MaxShowQuantity": 0,
-                "Price1AsString": "",
-                "Price2AsString": "",
-                "IntendedPositionQuantity": 0,
-            })
 
-            updates: list[dict] = []
-            deadline = time.time() + 20
-            terminal = False
-            while time.time() < deadline:
-                try:
-                    msg = await asyncio.wait_for(response_q.get(), timeout=deadline - time.time())
-                except asyncio.TimeoutError:
-                    break
-                if msg.get("ClientOrderID") == client_order_id:
-                    updates.append(_format_order_update(msg))
-                    reason = msg.get("OrderUpdateReason")
-                    status = msg.get("OrderStatus")
-                    if status in TERMINAL_ORDER_STATUSES or reason in TERMINAL_ORDER_REASONS:
-                        terminal = True
-                        break
+@mcp.tool()
+async def close_sim_position(
+    symbol: str,
+    trade_account: str = "SimTB1",
+    rationale: str = "",
+    confirm: bool = False,
+) -> dict:
+    """Close the current simulated/evaluator position for a symbol with guardrails.
 
-            if not updates:
-                return {
-                    "ok": False,
-                    "error": "order submitted but no matching ORDER_UPDATE received",
-                    "client_order_id": client_order_id,
-                    "preview": preview,
-                }
+    Reads the current position first, calculates the opposite market order, and
+    returns a preview unless confirm is true. This is the preferred tool for
+    natural-language requests like "close MES".
+    """
+    symbol = symbol.strip().upper()
+    trade_account = trade_account.strip()
+    rationale = rationale.strip()
+    config = Config.from_env()
 
-            last = updates[-1]
-            rejected = last.get("order_update_reason") == 8 or last.get("order_status") == 9
-            return {
-                "ok": not rejected,
-                "client_order_id": client_order_id,
-                "preview": preview,
-                "updates": updates,
-                "last_update": last,
-                "terminal": terminal,
-                "message": (
-                    "terminal order update received"
-                    if terminal
-                    else "order accepted/updated but no terminal fill/cancel/reject received before timeout"
-                ),
-            }
-        finally:
-            client.unsubscribe(MessageType.ORDER_UPDATE)
-    finally:
-        await client.close()
+    validation_error = _validate_sim_order(
+        symbol,
+        "buy",
+        1,
+        trade_account,
+        config.allowed_sim_accounts,
+    )
+    if validation_error:
+        return validation_error
+    if not rationale:
+        return {"ok": False, "error": "rationale is required"}
+
+    ok, result = await _collect_positions(config, trade_account)
+    if not ok:
+        return {"ok": False, "reject_reason": result}
+
+    positions = result  # type: ignore[assignment]
+    matches = [
+        p for p in positions
+        if _symbols_match(p.get("symbol"), symbol) and float(p.get("quantity") or 0) != 0
+    ]
+    if not matches:
+        return {
+            "ok": True,
+            "flat": True,
+            "message": f"no open position found for {symbol} in {trade_account}",
+            "positions": positions,
+        }
+    if len(matches) > 1:
+        return {
+            "ok": False,
+            "error": f"multiple matching positions found for {symbol}; close manually",
+            "matches": matches,
+        }
+
+    position = matches[0]
+    position_qty = float(position.get("quantity") or 0)
+    close_qty = int(abs(position_qty))
+    if close_qty < 1:
+        return {"ok": True, "flat": True, "message": f"position quantity is flat for {symbol}"}
+    if close_qty > SIM_MAX_QUANTITY:
+        return {
+            "ok": False,
+            "error": f"position quantity {close_qty} exceeds max close quantity {SIM_MAX_QUANTITY}",
+            "position": position,
+        }
+
+    close_side = "sell" if position_qty > 0 else "buy"
+    order_symbol = str(position.get("symbol") or symbol).strip().upper()
+    preview = {
+        "action": "close_sim_position",
+        "symbol": order_symbol,
+        "requested_symbol": symbol,
+        "side": close_side,
+        "quantity": close_qty,
+        "trade_account": trade_account,
+        "order_type": "market",
+        "rationale": rationale,
+        "position": position,
+        "safety": {
+            "sim_account_only": True,
+            "allowed_accounts": list(config.allowed_sim_accounts),
+            "allowed_symbols": sorted(SIM_ALLOWED_SYMBOLS),
+            "max_quantity": SIM_MAX_QUANTITY,
+        },
+    }
+    if not confirm:
+        return {
+            "ok": False,
+            "requires_confirmation": True,
+            "message": "Set confirm=true to submit this SIM close order.",
+            "preview": preview,
+        }
+
+    order_result = await _submit_sim_market_order(
+        config,
+        order_symbol,
+        close_side,
+        close_qty,
+        trade_account,
+        rationale,
+        OpenCloseTrade.CLOSE,
+        preview,
+    )
+    await asyncio.sleep(0.5)
+    post_ok, post_result = await _collect_positions(config, trade_account)
+    order_result["post_check"] = (
+        {
+            "ok": True,
+            "positions": [
+                p for p in post_result  # type: ignore[union-attr]
+                if _symbols_match(p.get("symbol"), symbol)
+            ],
+        }
+        if post_ok
+        else {"ok": False, "reject_reason": post_result}
+    )
+    return order_result
 
 
 def main() -> None:
