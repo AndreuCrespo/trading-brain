@@ -288,4 +288,4 @@ Prefer improvements that make Claude Desktop more useful immediately:
 3. Document the example question it enables.
 4. Only then expand the data surface.
 
-For trading-related write tools, keep them out of scope until the read path and journal are stable. When order placement is eventually added, start with Sim only and require explicit per-call confirmation.
+For trading-related write tools, keep the surface small and simulation-only until the read path, order lifecycle reporting and journal are stable. `place_sim_market_order` must stay guarded by Sim accounts, symbol allowlist, max quantity, required rationale and explicit per-call confirmation.

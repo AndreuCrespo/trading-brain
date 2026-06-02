@@ -44,6 +44,33 @@ INTERVAL_SECONDS = {
 SESSION_LOOKBACK_RECORDS = 1_000_000
 SIM_ALLOWED_SYMBOLS = {"MESM26-CME", "MNQM26-CME"}
 SIM_MAX_QUANTITY = 1
+TERMINAL_ORDER_STATUSES = {7, 8, 9}
+TERMINAL_ORDER_REASONS = {4, 6, 8, 9, 10}
+ORDER_STATUS_NAMES = {
+    0: "unspecified",
+    1: "order_sent",
+    2: "pending_open",
+    3: "pending_child",
+    4: "open",
+    5: "pending_cancel_replace",
+    6: "pending_cancel",
+    7: "filled",
+    8: "canceled",
+    9: "rejected",
+    10: "partially_filled",
+}
+ORDER_UPDATE_REASON_NAMES = {
+    1: "open_orders_request_response",
+    2: "new_order_accepted",
+    3: "general_order_update",
+    4: "order_filled",
+    5: "order_filled_partially",
+    6: "order_canceled",
+    7: "order_cancel_replace_complete",
+    8: "new_order_rejected",
+    9: "order_cancel_rejected",
+    10: "order_cancel_replace_rejected",
+}
 
 
 def datetime_from_unix(ts: float) -> str:
@@ -108,6 +135,8 @@ def _validate_sim_order(symbol: str, side: str, quantity: int, trade_account: st
 
 
 def _format_order_update(m: dict) -> dict:
+    order_status = m.get("OrderStatus")
+    update_reason = m.get("OrderUpdateReason")
     return {
         "request_id": m.get("RequestID"),
         "message_number": m.get("MessageNumber"),
@@ -118,13 +147,15 @@ def _format_order_update(m: dict) -> dict:
         "trade_account": m.get("TradeAccount"),
         "client_order_id": m.get("ClientOrderID"),
         "server_order_id": m.get("ServerOrderID"),
-        "order_status": m.get("OrderStatus"),
-        "order_update_reason": m.get("OrderUpdateReason"),
+        "order_status": order_status,
+        "order_status_name": ORDER_STATUS_NAMES.get(order_status),
+        "order_update_reason": update_reason,
+        "order_update_reason_name": ORDER_UPDATE_REASON_NAMES.get(update_reason),
         "order_type": m.get("OrderType"),
         "buy_sell": m.get("BuySell"),
         "price1": m.get("Price1"),
         "price2": m.get("Price2"),
-        "quantity": m.get("Quantity"),
+        "quantity": m.get("OrderQuantity", m.get("Quantity")),
         "filled_quantity": m.get("FilledQuantity"),
         "remaining_quantity": m.get("RemainingQuantity"),
         "average_fill_price": m.get("AverageFillPrice"),
@@ -850,7 +881,8 @@ async def place_sim_market_order(
             })
 
             updates: list[dict] = []
-            deadline = time.time() + 10
+            deadline = time.time() + 20
+            terminal = False
             while time.time() < deadline:
                 try:
                     msg = await asyncio.wait_for(response_q.get(), timeout=deadline - time.time())
@@ -860,7 +892,8 @@ async def place_sim_market_order(
                     updates.append(_format_order_update(msg))
                     reason = msg.get("OrderUpdateReason")
                     status = msg.get("OrderStatus")
-                    if reason in {2, 4, 5, 8} or status in {7, 9, 10}:
+                    if status in TERMINAL_ORDER_STATUSES or reason in TERMINAL_ORDER_REASONS:
+                        terminal = True
                         break
 
             if not updates:
@@ -879,6 +912,12 @@ async def place_sim_market_order(
                 "preview": preview,
                 "updates": updates,
                 "last_update": last,
+                "terminal": terminal,
+                "message": (
+                    "terminal order update received"
+                    if terminal
+                    else "order accepted/updated but no terminal fill/cancel/reject received before timeout"
+                ),
             }
         finally:
             client.unsubscribe(MessageType.ORDER_UPDATE)
