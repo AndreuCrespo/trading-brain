@@ -44,3 +44,31 @@ class LogonResult(IntEnum):
     ERROR = 2
     ERROR_NO_RECONNECT = 3
     RECONNECT_IN_FUTURE = 4
+
+
+class OrderType(IntEnum):
+    MARKET = 1
+    LIMIT = 2
+    STOP = 3
+    STOP_LIMIT = 4
+    MARKET_IF_TOUCHED = 5
+
+
+class BuySell(IntEnum):
+    BUY = 1
+    SELL = 2
+
+
+class TimeInForce(IntEnum):
+    DAY = 1
+    GOOD_TILL_CANCELED = 2
+    GOOD_TILL_DATE_TIME = 3
+    IMMEDIATE_OR_CANCEL = 4
+    ALL_OR_NONE = 5
+    FILL_OR_KILL = 6
+
+
+class OpenCloseTrade(IntEnum):
+    UNSPECIFIED = 0
+    OPEN = 1
+    CLOSE = 2

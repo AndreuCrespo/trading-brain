@@ -3,6 +3,7 @@ import logging
 import os
 import sys
 import time
+import uuid
 from datetime import datetime, time as dt_time, timedelta, timezone
 from pathlib import Path
 
@@ -16,7 +17,7 @@ from mcp.server.fastmcp import FastMCP
 
 from sierra_mcp.config import Config
 from sierra_mcp.dtc_client import DTCClient
-from sierra_mcp.dtc_messages import MessageType
+from sierra_mcp.dtc_messages import BuySell, MessageType, OpenCloseTrade, OrderType, TimeInForce
 from sierra_mcp import scid_reader
 
 logging.basicConfig(level=logging.INFO)
@@ -41,6 +42,8 @@ INTERVAL_SECONDS = {
 }
 
 SESSION_LOOKBACK_RECORDS = 1_000_000
+SIM_ALLOWED_SYMBOLS = {"MESM26-CME", "MNQM26-CME"}
+SIM_MAX_QUANTITY = 1
 
 
 def datetime_from_unix(ts: float) -> str:
@@ -86,6 +89,49 @@ def _delta_percent(bid_volume: int | float, ask_volume: int | float) -> float | 
     if total <= 0:
         return None
     return round((ask_volume - bid_volume) / total * 100, 2)
+
+
+def _validate_sim_order(symbol: str, side: str, quantity: int, trade_account: str) -> dict | None:
+    if not trade_account.startswith("Sim"):
+        return {"ok": False, "error": "trade_account must start with 'Sim' for order tools"}
+    if symbol not in SIM_ALLOWED_SYMBOLS:
+        return {
+            "ok": False,
+            "error": f"symbol not allowed for sim orders: {symbol}",
+            "allowed_symbols": sorted(SIM_ALLOWED_SYMBOLS),
+        }
+    if side.lower() not in {"buy", "sell"}:
+        return {"ok": False, "error": "side must be buy or sell"}
+    if quantity < 1 or quantity > SIM_MAX_QUANTITY:
+        return {"ok": False, "error": f"quantity must be between 1 and {SIM_MAX_QUANTITY}"}
+    return None
+
+
+def _format_order_update(m: dict) -> dict:
+    return {
+        "request_id": m.get("RequestID"),
+        "message_number": m.get("MessageNumber"),
+        "total_num_messages": m.get("TotalNumMessages") or m.get("TotalNumberMessages"),
+        "no_orders": bool(m.get("NoOrders")),
+        "symbol": m.get("Symbol"),
+        "exchange": m.get("Exchange"),
+        "trade_account": m.get("TradeAccount"),
+        "client_order_id": m.get("ClientOrderID"),
+        "server_order_id": m.get("ServerOrderID"),
+        "order_status": m.get("OrderStatus"),
+        "order_update_reason": m.get("OrderUpdateReason"),
+        "order_type": m.get("OrderType"),
+        "buy_sell": m.get("BuySell"),
+        "price1": m.get("Price1"),
+        "price2": m.get("Price2"),
+        "quantity": m.get("Quantity"),
+        "filled_quantity": m.get("FilledQuantity"),
+        "remaining_quantity": m.get("RemainingQuantity"),
+        "average_fill_price": m.get("AverageFillPrice"),
+        "last_fill_price": m.get("LastFillPrice"),
+        "info_text": m.get("InfoText"),
+        "free_form_text": m.get("FreeFormText"),
+    }
 
 
 def _globex_equity_session_start(last_tick_unix: float) -> float:
@@ -681,6 +727,161 @@ async def get_positions(trade_account: str = "") -> dict:
             for m in result  # type: ignore[union-attr]
         ]
         return {"ok": True, "count": len(positions), "positions": positions}
+    finally:
+        await client.close()
+
+
+@mcp.tool()
+async def get_open_orders(trade_account: str = "") -> dict:
+    """Get currently open/working orders for the given account.
+
+    trade_account: Specific account string. Leave empty for all accounts.
+    """
+    config = Config.from_env()
+    client = DTCClient(config.host, config.trading_port, config)
+    try:
+        await client.connect()
+        ok, result = await _collect_multi(
+            client,
+            {
+                "Type": int(MessageType.OPEN_ORDERS_REQUEST),
+                "RequestID": 1,
+                "RequestAllOrders": 1,
+                "ServerOrderID": "",
+                "TradeAccount": trade_account,
+            },
+            MessageType.ORDER_UPDATE,
+            MessageType.OPEN_ORDERS_REQUEST_REJECT,
+            no_items_key="NoOrders",
+            timeout=10,
+        )
+        if not ok:
+            return {"ok": False, "reject_reason": result}
+
+        orders = [_format_order_update(m) for m in result]  # type: ignore[arg-type]
+        orders = [o for o in orders if not o.get("no_orders")]
+        return {"ok": True, "count": len(orders), "orders": orders}
+    finally:
+        await client.close()
+
+
+@mcp.tool()
+async def place_sim_market_order(
+    symbol: str,
+    side: str,
+    quantity: int = 1,
+    trade_account: str = "Sim1",
+    rationale: str = "",
+    confirm: bool = False,
+) -> dict:
+    """Place a tightly-guarded market order in Sierra Chart Trade Simulation Mode.
+
+    Safety rules:
+    - trade_account must start with Sim
+    - symbol must be in the small allowlist (MESM26-CME, MNQM26-CME)
+    - quantity is capped at 1
+    - confirm must be true
+    - rationale is required
+
+    If confirm is false, returns an order preview and does not send anything.
+    """
+    symbol = symbol.strip().upper()
+    side_norm = side.strip().lower()
+    trade_account = trade_account.strip()
+    rationale = rationale.strip()
+
+    validation_error = _validate_sim_order(symbol, side_norm, quantity, trade_account)
+    if validation_error:
+        return validation_error
+    if not rationale:
+        return {"ok": False, "error": "rationale is required"}
+
+    preview = {
+        "symbol": symbol,
+        "side": side_norm,
+        "quantity": quantity,
+        "trade_account": trade_account,
+        "order_type": "market",
+        "rationale": rationale,
+        "safety": {
+            "sim_account_only": True,
+            "allowed_symbols": sorted(SIM_ALLOWED_SYMBOLS),
+            "max_quantity": SIM_MAX_QUANTITY,
+        },
+    }
+    if not confirm:
+        return {
+            "ok": False,
+            "requires_confirmation": True,
+            "message": "Set confirm=true to submit this SIM market order.",
+            "preview": preview,
+        }
+
+    client_order_id = f"tb-{int(time.time() * 1000)}-{uuid.uuid4().hex[:8]}"
+    buy_sell = BuySell.BUY if side_norm == "buy" else BuySell.SELL
+
+    config = Config.from_env()
+    client = DTCClient(config.host, config.trading_port, config)
+    try:
+        await client.connect()
+        response_q = client.subscribe(MessageType.ORDER_UPDATE)
+        try:
+            await client.send({
+                "Type": int(MessageType.SUBMIT_NEW_SINGLE_ORDER),
+                "Symbol": symbol,
+                "Exchange": "CME",
+                "ClientOrderID": client_order_id,
+                "OrderType": int(OrderType.MARKET),
+                "BuySell": int(buy_sell),
+                "Price1": 0,
+                "Price2": 0,
+                "TimeInForce": int(TimeInForce.DAY),
+                "GoodTillDateTime": 0,
+                "Quantity": quantity,
+                "TradeAccount": trade_account,
+                "IsAutomatedOrder": 1,
+                "IsParentOrder": 0,
+                "FreeFormText": f"trading-brain sim: {rationale}"[:120],
+                "OpenOrClose": int(OpenCloseTrade.UNSPECIFIED),
+                "MaxShowQuantity": 0,
+                "Price1AsString": "",
+                "Price2AsString": "",
+                "IntendedPositionQuantity": 0,
+            })
+
+            updates: list[dict] = []
+            deadline = time.time() + 10
+            while time.time() < deadline:
+                try:
+                    msg = await asyncio.wait_for(response_q.get(), timeout=deadline - time.time())
+                except asyncio.TimeoutError:
+                    break
+                if msg.get("ClientOrderID") == client_order_id:
+                    updates.append(_format_order_update(msg))
+                    reason = msg.get("OrderUpdateReason")
+                    status = msg.get("OrderStatus")
+                    if reason in {2, 4, 5, 8} or status in {7, 9, 10}:
+                        break
+
+            if not updates:
+                return {
+                    "ok": False,
+                    "error": "order submitted but no matching ORDER_UPDATE received",
+                    "client_order_id": client_order_id,
+                    "preview": preview,
+                }
+
+            last = updates[-1]
+            rejected = last.get("order_update_reason") == 8 or last.get("order_status") == 9
+            return {
+                "ok": not rejected,
+                "client_order_id": client_order_id,
+                "preview": preview,
+                "updates": updates,
+                "last_update": last,
+            }
+        finally:
+            client.unsubscribe(MessageType.ORDER_UPDATE)
     finally:
         await client.close()
 
