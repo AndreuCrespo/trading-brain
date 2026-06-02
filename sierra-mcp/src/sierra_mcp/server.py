@@ -42,7 +42,7 @@ INTERVAL_SECONDS = {
 }
 
 SESSION_LOOKBACK_RECORDS = 1_000_000
-SIM_ALLOWED_SYMBOLS = {"MESM26-CME", "MNQM26-CME"}
+SIM_ALLOWED_SYMBOLS = {"MESM26", "MESM26-CME", "MNQM26", "MNQM26-CME"}
 SIM_MAX_QUANTITY = 1
 TERMINAL_ORDER_STATUSES = {7, 8, 9}
 TERMINAL_ORDER_REASONS = {4, 6, 8, 9, 10}
@@ -826,7 +826,7 @@ async def place_sim_market_order(
 
     Safety rules:
     - trade_account must start with Sim
-    - symbol must be in the small allowlist (MESM26-CME, MNQM26-CME)
+    - symbol must be in the small allowlist (MES/MNQ current test contracts)
     - quantity is capped at 1
     - confirm must be true
     - rationale is required

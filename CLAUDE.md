@@ -155,9 +155,11 @@ Known Sierra state:
 - `get_quote` and DTC historical bars have returned `Request is not authorized` on the current Sierra/Denali setup. Do not assume DTC market data is fixed.
 - `get_positions` uses `CURRENT_POSITIONS_REQUEST` (DTC type 305) and responds
   correctly with an empty list when there are no Sim positions.
-- `place_sim_market_order` is guarded: Sim accounts only, `MESM26-CME` /
-  `MNQM26-CME` only, max quantity 1, rationale required, `confirm=True`
-  required, and the account must be listed in local `sierra-mcp/safety.json`.
+- `place_sim_market_order` is guarded: Sim accounts only, MES/MNQ current test
+  contract symbols only (`MESM26-CME` / `MNQM26-CME` for SC Data style,
+  `MESM26` / `MNQM26` for Trading Evaluator style), max quantity 1, rationale
+  required, `confirm=True` required, and the account must be listed in local
+  `sierra-mcp/safety.json`.
   It is for Sierra simulated/evaluator accounts only.
 - `get_account_balance` can return empty on Sim accounts; Sierra may not
   maintain account balances for Trade Simulation Mode accounts.
