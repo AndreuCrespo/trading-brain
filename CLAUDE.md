@@ -157,7 +157,8 @@ Known Sierra state:
   correctly with an empty list when there are no Sim positions.
 - `place_sim_market_order` is guarded: Sim accounts only, `MESM26-CME` /
   `MNQM26-CME` only, max quantity 1, rationale required, `confirm=True`
-  required. It is for Sierra Trade Simulation Mode only.
+  required, and the account must be listed in `SIERRA_ALLOWED_SIM_ACCOUNTS`.
+  It is for Sierra simulated/evaluator accounts only.
 - `get_account_balance` can return empty on Sim accounts; Sierra may not
   maintain account balances for Trade Simulation Mode accounts.
 

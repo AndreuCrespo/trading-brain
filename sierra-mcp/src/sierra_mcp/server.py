@@ -118,9 +118,26 @@ def _delta_percent(bid_volume: int | float, ask_volume: int | float) -> float | 
     return round((ask_volume - bid_volume) / total * 100, 2)
 
 
-def _validate_sim_order(symbol: str, side: str, quantity: int, trade_account: str) -> dict | None:
+def _validate_sim_order(
+    symbol: str,
+    side: str,
+    quantity: int,
+    trade_account: str,
+    allowed_sim_accounts: tuple[str, ...],
+) -> dict | None:
     if not trade_account.startswith("Sim"):
         return {"ok": False, "error": "trade_account must start with 'Sim' for order tools"}
+    if not allowed_sim_accounts:
+        return {
+            "ok": False,
+            "error": "SIERRA_ALLOWED_SIM_ACCOUNTS must be set before order tools can submit",
+        }
+    if trade_account not in allowed_sim_accounts:
+        return {
+            "ok": False,
+            "error": f"trade_account not allowed for sim orders: {trade_account}",
+            "allowed_accounts": list(allowed_sim_accounts),
+        }
     if symbol not in SIM_ALLOWED_SYMBOLS:
         return {
             "ok": False,
@@ -820,8 +837,15 @@ async def place_sim_market_order(
     side_norm = side.strip().lower()
     trade_account = trade_account.strip()
     rationale = rationale.strip()
+    config = Config.from_env()
 
-    validation_error = _validate_sim_order(symbol, side_norm, quantity, trade_account)
+    validation_error = _validate_sim_order(
+        symbol,
+        side_norm,
+        quantity,
+        trade_account,
+        config.allowed_sim_accounts,
+    )
     if validation_error:
         return validation_error
     if not rationale:
@@ -836,6 +860,7 @@ async def place_sim_market_order(
         "rationale": rationale,
         "safety": {
             "sim_account_only": True,
+            "allowed_accounts": list(config.allowed_sim_accounts),
             "allowed_symbols": sorted(SIM_ALLOWED_SYMBOLS),
             "max_quantity": SIM_MAX_QUANTITY,
         },
@@ -851,7 +876,6 @@ async def place_sim_market_order(
     client_order_id = f"tb-{int(time.time() * 1000)}-{uuid.uuid4().hex[:8]}"
     buy_sell = BuySell.BUY if side_norm == "buy" else BuySell.SELL
 
-    config = Config.from_env()
     client = DTCClient(config.host, config.trading_port, config)
     try:
         await client.connect()

@@ -38,9 +38,9 @@ The client assumes Sierra Chart is already speaking JSON — there is no encodin
 - `Listening Port` = 11099 (trading/market data)
 - `Historical Data Port` = 11098
 
-For development, also enable *Trade → Trade Simulation Mode*.
+For local chart-only simulation, enable *Trade -> Trade Simulation Mode*. For server-side demo trading with persistent account state, use Sierra's Trading Evaluator / Trading Evaluator - Delayed service and keep local Trade Simulation Mode off.
 
-Connection params come from env vars (see `config.py`): `SIERRA_DTC_HOST`, `SIERRA_DTC_PORT`, `SIERRA_DTC_HISTORICAL_PORT`, `SIERRA_DTC_USERNAME`, `SIERRA_DTC_PASSWORD`, `SIERRA_DTC_CLIENT_NAME`, `SIERRA_DTC_HEARTBEAT`.
+Connection params come from env vars (see `config.py`): `SIERRA_DTC_HOST`, `SIERRA_DTC_PORT`, `SIERRA_DTC_HISTORICAL_PORT`, `SIERRA_DTC_USERNAME`, `SIERRA_DTC_PASSWORD`, `SIERRA_DTC_CLIENT_NAME`, `SIERRA_DTC_HEARTBEAT`, `SIERRA_ALLOWED_SIM_ACCOUNTS`.
 
 ## Architecture
 

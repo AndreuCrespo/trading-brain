@@ -31,6 +31,7 @@ class Config:
     client_name: str
     heartbeat_interval: int
     data_path: str
+    allowed_sim_accounts: tuple[str, ...]
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -43,4 +44,9 @@ class Config:
             client_name=os.getenv("SIERRA_DTC_CLIENT_NAME", "sierra-mcp"),
             heartbeat_interval=int(os.getenv("SIERRA_DTC_HEARTBEAT", "10")),
             data_path=os.getenv("SIERRA_DATA_PATH", r"D:\SierraChart\Data"),
+            allowed_sim_accounts=tuple(
+                account.strip()
+                for account in os.getenv("SIERRA_ALLOWED_SIM_ACCOUNTS", "").split(",")
+                if account.strip()
+            ),
         )
