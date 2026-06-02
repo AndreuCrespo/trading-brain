@@ -151,7 +151,10 @@ Known Sierra state:
   an approximate current CME equity Globex session from 22:00 UTC, and returns
   latest tick, recent bars, VWAP, range, delta, ATR and simple bias.
 - `get_quote` and DTC historical bars have returned `Request is not authorized` on the current Sierra/Denali setup. Do not assume DTC market data is fixed.
-- `get_account_balance` and `get_positions` were partially tested; Sim accounts returned empty/timeout before opening test trades.
+- `get_positions` uses `CURRENT_POSITIONS_REQUEST` (DTC type 305) and responds
+  correctly with an empty list when there are no Sim positions.
+- `get_account_balance` can return empty on Sim accounts; Sierra may not
+  maintain account balances for Trade Simulation Mode accounts.
 
 Sierra Chart local setup expected:
 

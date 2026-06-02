@@ -657,12 +657,12 @@ async def get_positions(trade_account: str = "") -> dict:
         ok, result = await _collect_multi(
             client,
             {
-                "Type": int(MessageType.POSITIONS_REQUEST),
+                "Type": int(MessageType.CURRENT_POSITIONS_REQUEST),
                 "RequestID": 1,
                 "TradeAccount": trade_account,
             },
             MessageType.POSITION_UPDATE,
-            MessageType.POSITION_REQUEST_REJECT,
+            MessageType.CURRENT_POSITIONS_REJECT,
             no_items_key="NoPositions",
             timeout=10,
         )

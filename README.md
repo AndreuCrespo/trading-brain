@@ -190,8 +190,10 @@ daily_summary(date="2026-06-01")
 - ⚠️ `get_quote` / `get_recent_bars` (DTC) return *"Request is not authorized"*
   on the current account despite SP11 + Denali active. Workaround in place via
   `get_recent_bars_scid`; investigating with Sierra support.
-- ⚠️ `get_account_balance` / `get_positions` return empty / timeout on the Sim
-  accounts before any trade has been opened in Sierra. Validation pending.
+- ✅ `get_positions` responds correctly after the DTC message ID fix; validate
+  it with a manually-opened Sim position before adding order placement.
+- ⚠️ `get_account_balance` returns empty on Sim accounts. Sierra may not maintain
+  balances for Trade Simulation Mode accounts.
 - Read-only across the board. No order placement.
 
 ## Roadmap
