@@ -1,3 +1,4 @@
+import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,6 +20,23 @@ try:
             load_dotenv(_found, override=True)
 except ImportError:
     pass
+
+
+def _load_allowed_sim_accounts() -> tuple[str, ...]:
+    candidates = [
+        Path(__file__).resolve().parents[2] / "safety.json",
+        Path.cwd() / "safety.json",
+    ]
+    for path in candidates:
+        if not path.exists():
+            continue
+        with path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+        accounts = data.get("allowed_sim_accounts", [])
+        if not isinstance(accounts, list):
+            raise ValueError("safety.json allowed_sim_accounts must be a list")
+        return tuple(str(account).strip() for account in accounts if str(account).strip())
+    return ()
 
 
 @dataclass(frozen=True)
@@ -44,9 +62,5 @@ class Config:
             client_name=os.getenv("SIERRA_DTC_CLIENT_NAME", "sierra-mcp"),
             heartbeat_interval=int(os.getenv("SIERRA_DTC_HEARTBEAT", "10")),
             data_path=os.getenv("SIERRA_DATA_PATH", r"D:\SierraChart\Data"),
-            allowed_sim_accounts=tuple(
-                account.strip()
-                for account in os.getenv("SIERRA_ALLOWED_SIM_ACCOUNTS", "").split(",")
-                if account.strip()
-            ),
+            allowed_sim_accounts=_load_allowed_sim_accounts(),
         )

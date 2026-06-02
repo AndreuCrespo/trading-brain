@@ -130,7 +130,7 @@ def _validate_sim_order(
     if not allowed_sim_accounts:
         return {
             "ok": False,
-            "error": "SIERRA_ALLOWED_SIM_ACCOUNTS must be set before order tools can submit",
+            "error": "safety.json allowed_sim_accounts must be set before order tools can submit",
         }
     if trade_account not in allowed_sim_accounts:
         return {

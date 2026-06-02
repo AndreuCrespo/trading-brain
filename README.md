@@ -72,7 +72,16 @@ SIERRA_DTC_HOST=127.0.0.1
 SIERRA_DTC_PORT=11099
 SIERRA_DTC_HISTORICAL_PORT=11098
 SIERRA_DATA_PATH=D:\SierraChart\Data
-SIERRA_ALLOWED_SIM_ACCOUNTS=SimTB1
+```
+
+For order tools, create a local gitignored `sierra-mcp/safety.json` from
+`sierra-mcp/safety.example.json` and list the demo/evaluator accounts Claude is
+allowed to touch:
+
+```json
+{
+  "allowed_sim_accounts": ["SimTB1"]
+}
 ```
 
 journal-mcp env vars (optional):

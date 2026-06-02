@@ -1,6 +1,7 @@
 .venv/
 .env
 .env.local
+safety.json
 __pycache__/
 *.py[cod]
 *.egg-info/
