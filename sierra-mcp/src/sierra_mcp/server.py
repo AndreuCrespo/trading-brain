@@ -4,6 +4,7 @@ import os
 import sys
 import time
 import uuid
+from collections import defaultdict
 from datetime import datetime, time as dt_time, timedelta, timezone
 from pathlib import Path
 
@@ -42,6 +43,7 @@ INTERVAL_SECONDS = {
 }
 
 SESSION_LOOKBACK_RECORDS = 1_000_000
+FEATURES_LOOKBACK_RECORDS = 2_000_000
 SIM_ALLOWED_SYMBOLS = {"MESM26", "MESM26-CME", "MNQM26", "MNQM26-CME"}
 SIM_MAX_QUANTITY = 1
 TERMINAL_ORDER_STATUSES = {7, 8, 9}
@@ -116,6 +118,121 @@ def _delta_percent(bid_volume: int | float, ask_volume: int | float) -> float | 
     if total <= 0:
         return None
     return round((ask_volume - bid_volume) / total * 100, 2)
+
+
+def _round_to_tick(price: float, tick_size: float) -> float:
+    return round(round(price / tick_size) * tick_size, 10)
+
+
+def _volume_profile(
+    records: list[scid_reader.TickRecord],
+    tick_size: float,
+    value_area_percent: float,
+) -> dict:
+    if not records:
+        return {}
+
+    volume_by_price: defaultdict[float, int] = defaultdict(int)
+    bid_volume_by_price: defaultdict[float, int] = defaultdict(int)
+    ask_volume_by_price: defaultdict[float, int] = defaultdict(int)
+    for r in records:
+        price = _round_to_tick(float(r.close), tick_size)
+        volume_by_price[price] += int(r.volume)
+        bid_volume_by_price[price] += int(r.bid_volume)
+        ask_volume_by_price[price] += int(r.ask_volume)
+
+    if not volume_by_price:
+        return {}
+
+    prices = sorted(volume_by_price)
+    total_volume = sum(volume_by_price.values())
+    poc = max(prices, key=lambda p: (volume_by_price[p], -abs(p - records[-1].close)))
+    target_volume = total_volume * value_area_percent
+
+    selected = {poc}
+    selected_volume = volume_by_price[poc]
+    poc_index = prices.index(poc)
+    low_index = poc_index
+    high_index = poc_index
+
+    while selected_volume < target_volume and (low_index > 0 or high_index < len(prices) - 1):
+        below_price = prices[low_index - 1] if low_index > 0 else None
+        above_price = prices[high_index + 1] if high_index < len(prices) - 1 else None
+        below_volume = volume_by_price[below_price] if below_price is not None else -1
+        above_volume = volume_by_price[above_price] if above_price is not None else -1
+
+        if above_volume >= below_volume and above_price is not None:
+            high_index += 1
+            selected.add(above_price)
+            selected_volume += above_volume
+        elif below_price is not None:
+            low_index -= 1
+            selected.add(below_price)
+            selected_volume += below_volume
+        else:
+            break
+
+    high_volume_nodes = sorted(
+        (
+            {
+                "price": p,
+                "volume": volume_by_price[p],
+                "bid_volume": bid_volume_by_price[p],
+                "ask_volume": ask_volume_by_price[p],
+                "delta": ask_volume_by_price[p] - bid_volume_by_price[p],
+            }
+            for p in prices
+        ),
+        key=lambda row: row["volume"],
+        reverse=True,
+    )[:10]
+
+    return {
+        "tick_size": tick_size,
+        "value_area_percent": value_area_percent,
+        "poc": poc,
+        "vah": max(selected),
+        "val": min(selected),
+        "value_area_volume": selected_volume,
+        "total_volume": total_volume,
+        "value_area_actual_percent": round(selected_volume / total_volume * 100, 2) if total_volume else None,
+        "high_volume_nodes": high_volume_nodes,
+    }
+
+
+def _profile_context(records: list[scid_reader.TickRecord], tick_size: float, value_area_percent: float) -> dict:
+    stats = scid_reader.aggregate_session_stats(records)
+    profile = _volume_profile(records, tick_size, value_area_percent)
+    if not stats:
+        return {}
+    return {
+        **stats,
+        "volume_profile": profile,
+    }
+
+
+def _position_vs_value(price: float, profile: dict) -> str:
+    val = profile.get("val")
+    vah = profile.get("vah")
+    if val is None or vah is None:
+        return "unknown"
+    if price > vah:
+        return "above_value"
+    if price < val:
+        return "below_value"
+    return "inside_value"
+
+
+def _distance(price: float, level: float | None) -> float | None:
+    return round(price - level, 4) if level is not None else None
+
+
+def _resolve_scid_path(data_path: str, symbol: str) -> tuple[str, str] | None:
+    for candidate in [symbol, *_symbol_aliases(symbol)]:
+        path = os.path.join(data_path, f"{candidate}.scid")
+        if os.path.exists(path):
+            return candidate, path
+    return None
 
 
 def _validate_sim_order(
@@ -630,6 +747,149 @@ async def get_futures_context(
         "bars": recent_bars,
         "ticks_scanned": len(records),
         "session_ticks": len(session_records),
+        "file": {
+            "record_count": status["record_count"],
+            "modified_time": status["modified_time"],
+        },
+    }
+
+
+@mcp.tool()
+async def get_market_features(
+    symbol: str,
+    interval: str = "1m",
+    bars_count: int = 30,
+    tick_size: float = 0.25,
+    value_area_percent: float = 0.70,
+) -> dict:
+    """Calculate structured market features from Sierra's local .scid file.
+
+    This is the indicator-engine path for the trading system: it calculates
+    VWAP, value area, POC, delta, range and price location from raw tick records
+    instead of reading visual studies from a chart. It returns current and
+    previous approximate CME equity-index Globex sessions.
+    """
+    if interval not in INTERVAL_SECONDS or interval in ("tick", "1s"):
+        return {"ok": False, "error": "interval must be 1m/5m/15m/30m/1h/4h/1d"}
+    if tick_size <= 0:
+        return {"ok": False, "error": "tick_size must be positive"}
+    if not 0.50 <= value_area_percent <= 0.90:
+        return {"ok": False, "error": "value_area_percent must be between 0.50 and 0.90"}
+
+    bars_count = max(5, min(bars_count, 500))
+    interval_sec = INTERVAL_SECONDS[interval]
+
+    config = Config.from_env()
+    resolved = _resolve_scid_path(config.data_path, symbol)
+    if resolved is None:
+        aliases = sorted(_symbol_aliases(symbol))
+        return {
+            "ok": False,
+            "error": f"file not found for {symbol}",
+            "tried_symbols": aliases,
+            "data_path": config.data_path,
+        }
+    resolved_symbol, scid_path = resolved
+
+    records = await asyncio.to_thread(
+        scid_reader.read_tail_records,
+        scid_path,
+        FEATURES_LOOKBACK_RECORDS,
+    )
+    if not records:
+        return {"ok": False, "error": f"no records in file: {scid_path}"}
+
+    last_record = records[-1]
+    current_start = _globex_equity_session_start(last_record.unix_time)
+    previous_start = current_start - 24 * 60 * 60
+
+    current_records = [r for r in records if r.unix_time >= current_start]
+    previous_records = [r for r in records if previous_start <= r.unix_time < current_start]
+    if not current_records:
+        current_records = records
+
+    current = _profile_context(current_records, tick_size, value_area_percent)
+    previous = _profile_context(previous_records, tick_size, value_area_percent)
+
+    bars = scid_reader.aggregate_to_bars(records, interval_sec)[-bars_count:]
+    status = await asyncio.to_thread(scid_reader.file_status, scid_path)
+
+    latest_price = float(last_record.close)
+    current_profile = current.get("volume_profile", {})
+    previous_profile = previous.get("volume_profile", {})
+    current_vwap = current.get("vwap")
+    previous_vwap = previous.get("vwap")
+
+    warnings: list[str] = []
+    now = time.time()
+    tick_age = max(0.0, now - last_record.unix_time)
+    file_age = max(0.0, now - status["modified_unix"])
+    if file_age > 10:
+        warnings.append(f"SCID file is stale by {file_age:.1f}s")
+    if tick_age > 30:
+        warnings.append(f"last tick is stale by {tick_age:.1f}s")
+    if not previous:
+        warnings.append("previous Globex session unavailable in loaded SCID tail")
+
+    relationships = {
+        "current_value_location": _position_vs_value(latest_price, current_profile),
+        "previous_value_location": _position_vs_value(latest_price, previous_profile),
+        "distance_to_current_vwap": _distance(latest_price, current_vwap),
+        "distance_to_previous_vwap": _distance(latest_price, previous_vwap),
+        "distance_to_current_vah": _distance(latest_price, current_profile.get("vah")),
+        "distance_to_current_val": _distance(latest_price, current_profile.get("val")),
+        "distance_to_current_poc": _distance(latest_price, current_profile.get("poc")),
+        "distance_to_previous_vah": _distance(latest_price, previous_profile.get("vah")),
+        "distance_to_previous_val": _distance(latest_price, previous_profile.get("val")),
+        "distance_to_previous_poc": _distance(latest_price, previous_profile.get("poc")),
+    }
+
+    read_parts: list[str] = []
+    current_loc = relationships["current_value_location"]
+    previous_loc = relationships["previous_value_location"]
+    if current_loc != "unknown":
+        read_parts.append(f"price_{current_loc}_current_value")
+    if previous_loc != "unknown":
+        read_parts.append(f"price_{previous_loc}_previous_value")
+    if current_vwap is not None:
+        read_parts.append("above_current_vwap" if latest_price > current_vwap else "below_current_vwap")
+    if current.get("delta") is not None:
+        read_parts.append("positive_delta" if current["delta"] > 0 else "negative_delta")
+
+    return {
+        "ok": True,
+        "symbol": symbol,
+        "resolved_symbol": resolved_symbol,
+        "source": scid_path,
+        "latest": {
+            "price": latest_price,
+            "time": datetime_from_unix(last_record.unix_time),
+            "tick_age_seconds": round(tick_age, 3),
+            "file_age_seconds": round(file_age, 3),
+            "volume": last_record.volume,
+            "bid_volume": last_record.bid_volume,
+            "ask_volume": last_record.ask_volume,
+        },
+        "settings": {
+            "interval": interval,
+            "bars_count": bars_count,
+            "tick_size": tick_size,
+            "value_area_percent": value_area_percent,
+            "session_model": "approx_cme_equity_globex_22utc",
+        },
+        "current_session": current,
+        "previous_session": previous,
+        "relationships": relationships,
+        "read": {
+            "tags": read_parts,
+            "warnings": warnings,
+        },
+        "bars": bars,
+        "ticks_scanned": len(records),
+        "session_ticks": {
+            "current": len(current_records),
+            "previous": len(previous_records),
+        },
         "file": {
             "record_count": status["record_count"],
             "modified_time": status["modified_time"],

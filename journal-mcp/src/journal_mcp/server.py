@@ -155,6 +155,51 @@ Then ask me whether to save the weekly review. If I say yes, use
 """.strip()
 
 
+@mcp.prompt(
+    name="discord_study_ingest",
+    title="Discord Study Ingest",
+    description="Turn Discord course messages and screenshots into structured playbook knowledge.",
+)
+def discord_study_ingest_prompt(
+    server: str = "Estudio trading donAdri",
+    group: str = "futuros",
+    topic: str = "vwap value area setups",
+) -> str:
+    """Prompt Claude to extract reusable rules from Discord text/images."""
+    return f"""
+Act as my trading-system study assistant.
+
+Goal: convert Discord course content into structured knowledge that can be
+searched later during premarket/trading reviews. Focus topic: `{topic}`.
+
+Use the available MCP tools in this order:
+
+1. Discord:
+   - Read the `{group}` group from server `{server}`.
+   - Prioritize messages, embeds and attachments related to `{topic}`.
+   - For relevant image attachments, call `fetch_image` and inspect the image.
+
+2. Extraction:
+   - Extract concrete rules, definitions, setup conditions, invalidation rules,
+     examples, anti-examples and vocabulary.
+   - Prefer structured statements over long prose.
+   - Distinguish what is explicitly shown/taught from your inference.
+
+3. Journal:
+   - Save each useful concept with `log_observation`.
+   - Use tags like `playbook`, `discord-study`, `futures`, plus topic-specific
+     tags such as `vwap`, `value-area`, `poc`, `dva`, `delta`, `setup`.
+   - Include source metadata when available: server, group, channel, message_id,
+     attachment filename/url.
+
+Return:
+- A concise study summary.
+- A table of extracted rules/setups.
+- Any ambiguous items that need human confirmation.
+- Which observations you saved to the journal.
+""".strip()
+
+
 @mcp.tool()
 def premarket_review(
     server: str = "Estudio trading donAdri",
@@ -203,6 +248,20 @@ def weekly_trading_review(
 
 
 @mcp.tool()
+def discord_study_ingest(
+    server: str = "Estudio trading donAdri",
+    group: str = "futuros",
+    topic: str = "vwap value area setups",
+) -> dict:
+    """Return workflow instructions for turning Discord course content into journal knowledge."""
+    return {
+        "ok": True,
+        "workflow": "discord_study_ingest",
+        "instructions": discord_study_ingest_prompt(server, group, topic),
+    }
+
+
+@mcp.tool()
 def list_workflows() -> dict:
     """List available trading workflows exposed by journal-mcp."""
     return {
@@ -219,6 +278,10 @@ def list_workflows() -> dict:
             {
                 "name": "weekly_trading_review",
                 "description": "Use journal, Discord write-ups and futures context to summarize the week.",
+            },
+            {
+                "name": "discord_study_ingest",
+                "description": "Read Discord course messages/screenshots and save structured playbook knowledge.",
             },
         ],
     }

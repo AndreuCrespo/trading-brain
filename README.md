@@ -9,9 +9,9 @@ SQLite journal for persistent memory.
 
 | MCP | Purpose | Tools |
 |---|---|---|
-| **sierra-mcp** | Sierra Chart bridge (futures: ES, NQ, MES, MNQ on CME) | `ping_sierra`, `get_quote`, `get_recent_bars` (DTC), `get_recent_bars_scid` (local file), `get_latest_tick_scid`, `get_scid_status`, `get_futures_context`, `list_trade_accounts`, `get_account_balance`, `get_positions`, `get_open_orders`, `place_sim_market_order`, `close_sim_position` |
+| **sierra-mcp** | Sierra Chart bridge (futures: ES, NQ, MES, MNQ on CME) | `ping_sierra`, `get_quote`, `get_recent_bars` (DTC), `get_recent_bars_scid` (local file), `get_latest_tick_scid`, `get_scid_status`, `get_futures_context`, `get_market_features`, `list_trade_accounts`, `get_account_balance`, `get_positions`, `get_open_orders`, `place_sim_market_order`, `close_sim_position` |
 | **discord-mcp** | Read-only Discord channels as a knowledge base | `list_servers`, `list_channels`, `read_recent_messages`, `search_messages`, `fetch_image`, `list_groups`, `read_group` |
-| **journal-mcp** | Local SQLite memory for observations, trades, and reviews | Tools: `log_observation`, `log_trade`, `update_trade`, `search_journal`, `list_recent`, `daily_summary`, `list_workflows`, `premarket_review`, `postmarket_review`, `weekly_trading_review` |
+| **journal-mcp** | Local SQLite memory for observations, trades, and reviews | Tools: `log_observation`, `log_trade`, `update_trade`, `search_journal`, `list_recent`, `daily_summary`, `list_workflows`, `premarket_review`, `postmarket_review`, `weekly_trading_review`, `discord_study_ingest` |
 
 Discord is read-only. journal-mcp writes only to a local SQLite journal database.
 sierra-mcp includes tightly-guarded simulation/evaluator-only order tools. Real
@@ -31,9 +31,11 @@ Two paths, complementary:
    Works regardless of DTC permissions. ~Seconds of lag from real-time (file
    flush cadence).
 
-`get_futures_context` is the main ES/NQ context pack: latest tick, freshness,
+`get_futures_context` is the compact ES/NQ context pack: latest tick, freshness,
 recent bars, approximate current Globex session OHLC/VWAP/delta, ATR, and a
-simple bias read.
+simple bias read. `get_market_features` is the indicator-engine path: it
+calculates current/previous Globex VWAP, POC, VAH/VAL, high-volume nodes, delta
+and price location from raw `.scid` ticks.
 
 ## Requirements
 
@@ -163,6 +165,8 @@ other MCPs from Claude Desktop:
 - `premarket_review`: reads Discord `prep`, Sierra futures context, and journal memory.
 - `postmarket_review`: reads Discord `post`, chart screenshots, Sierra context, and journal memory.
 - `weekly_trading_review`: summarizes the week from journal + Discord write-ups + current futures context.
+- `discord_study_ingest`: reads Discord course channels/screenshots and saves
+  structured playbook rules/setups to the journal.
 
 Example flow:
 
@@ -195,6 +199,8 @@ daily_summary(date="2026-06-01")
 - ✅ `ping_sierra`, `get_recent_bars_scid` validated against live data
 - ✅ `get_latest_tick_scid` smoke-tested on MESM26-CME with ~1-2s file/tick age
 - ✅ `get_futures_context` smoke-tested on MESM26-CME using current Globex session
+- ✅ `get_market_features` calculates current/previous Globex VWAP, POC, VAH/VAL
+  and value-location tags from local `.scid` ticks
 - ✅ Discord tools all validated against the live community server
 - ✅ journal-mcp smoke-tested locally against SQLite
 - ⚠️ `get_quote` / `get_recent_bars` (DTC) return *"Request is not authorized"*
@@ -213,8 +219,8 @@ daily_summary(date="2026-06-01")
 Short term, in priority order:
 1. Use journal-mcp in real Claude Desktop conversations and refine the schema
    from actual workflow pain.
-2. Indicators/context on top of `.scid` bars: VWAP, ATR, RVOL, market profile,
-   delta, `get_futures_context`.
+2. Extend market features on top of `.scid` ticks: RTH/ETH splits, pVWAP/mVWAP,
+   ADR/RVOL and richer market-profile/state tags.
 3. If true bid/ask/DOM real-time is required, build an ACSIL bridge inside
    Sierra Chart that writes ticks/quotes/depth to a local file or socket.
 4. Order placement (sim first, with explicit confirmation per call).

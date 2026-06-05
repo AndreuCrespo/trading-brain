@@ -79,3 +79,9 @@ Some DTC requests yield a stream of responses (positions, historical bars), term
 ## Known unknowns
 
 The exact DTC field names (e.g., `TradingIsSupported` vs `TradeIsSupported`) and a few of the less-common message type numbers were written from spec memory and need verification against Sierra Chart's actual responses. If a tool returns empty/wrong data, check Sierra Chart's *Message Log* window first — it shows the raw JSON in both directions.
+
+`get_market_features` is the first indicator-engine tool. It intentionally
+calculates VWAP, value area, POC and delta from local `.scid` ticks instead of
+reading chart studies visually. Keep future system-learning work on structured
+features first, with Discord screenshots ingested offline into journal/knowledge
+records rather than inspected at trade time.

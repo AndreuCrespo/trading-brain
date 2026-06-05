@@ -129,6 +129,7 @@ All `.env` files are local secrets/config and are gitignored.
 - `get_latest_tick_scid`
 - `get_scid_status`
 - `get_futures_context`
+- `get_market_features`
 - `list_trade_accounts`
 - `get_account_balance`
 - `get_positions`
@@ -153,6 +154,11 @@ Known Sierra state:
 - `get_futures_context` is the main ES/NQ context pack. It uses `.scid`, filters
   an approximate current CME equity Globex session from 22:00 UTC, and returns
   latest tick, recent bars, VWAP, range, delta, ATR and simple bias.
+- `get_market_features` is the indicator-engine path. Prefer it when the user
+  asks about VWAP, POC, value area, pVAH/pVAL/pPOC, current vs previous value,
+  or wants the agent to reason from indicators instead of chart screenshots.
+  It calculates current and previous approximate Globex VWAP, POC, VAH/VAL,
+  high-volume nodes, delta and price-location tags from raw `.scid` ticks.
 - `get_quote` and DTC historical bars have returned `Request is not authorized` on the current Sierra/Denali setup. Do not assume DTC market data is fixed.
 - `get_positions` uses `CURRENT_POSITIONS_REQUEST` (DTC type 305) and responds
   correctly with an empty list when there are no Sim positions.
@@ -227,12 +233,19 @@ Use `groups.yml` for channel taxonomy changes. Do not hardcode channel names in 
 - `premarket_review`
 - `postmarket_review`
 - `weekly_trading_review`
+- `discord_study_ingest`
 
 It also exposes matching MCP prompts:
 
 - `premarket_review`
 - `postmarket_review`
 - `weekly_trading_review`
+- `discord_study_ingest`
+
+Use `discord_study_ingest` when the user wants the system to learn from Discord
+course material, screenshots, playbook channels or setup examples. It should use
+Discord `fetch_image` for image attachments and save extracted rules as journal
+observations with source metadata.
 
 Key files:
 
