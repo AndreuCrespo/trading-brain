@@ -247,6 +247,12 @@ course material, screenshots, playbook channels or setup examples. It should use
 Discord `fetch_image` for image attachments and save extracted rules as journal
 observations with source metadata.
 
+Premarket/postmarket workflows should prefer Sierra `get_market_features` over
+`get_futures_context` when reasoning about VWAP, POC, current/previous value,
+VAH/VAL, pVAH/pVAL or delta. Then cross-check journal playbook observations
+tagged `playbook`, `discord-study`, `vwap`, `value-area`, `poc`, `dva`, and
+`setup`.
+
 Key files:
 
 - `server.py`: FastMCP tools for writing and searching memory.

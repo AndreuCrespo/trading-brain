@@ -162,9 +162,9 @@ rules, and daily/weekly review raw material.
 It also exposes workflow tools (and matching MCP prompts) that orchestrate the
 other MCPs from Claude Desktop:
 
-- `premarket_review`: reads Discord `prep`, Sierra futures context, and journal memory.
-- `postmarket_review`: reads Discord `post`, chart screenshots, Sierra context, and journal memory.
-- `weekly_trading_review`: summarizes the week from journal + Discord write-ups + current futures context.
+- `premarket_review`: reads Discord `prep`, Sierra market features, and journal playbook/risk memory.
+- `postmarket_review`: reads Discord `post`, chart screenshots, Sierra market features, and journal memory.
+- `weekly_trading_review`: summarizes the week from journal + Discord write-ups + current market features.
 - `discord_study_ingest`: reads Discord course channels/screenshots and saves
   structured playbook rules/setups to the journal.
 

@@ -56,16 +56,25 @@ Use the available MCP tools in this order:
    - Prioritize futures-related prep/watchlist content.
 
 2. Sierra:
-   - Call `get_futures_context` for `{futures_symbol}` with interval `1m`.
-   - Call `get_futures_context` for `{nasdaq_symbol}` with interval `1m`.
+   - Call `get_market_features` for `{futures_symbol}` with interval `1m`.
+   - Call `get_market_features` for `{nasdaq_symbol}` with interval `1m`.
+   - If either `.scid` file is stale, say so clearly and avoid treating levels
+     as current.
+   - Use `get_futures_context` only as a compact secondary read if needed.
 
 3. Journal:
    - Search recent journal entries for tags: `premarket`, `plan`, `futures`, `risk`.
-   - Look for recurring mistakes or rules that should affect today's plan.
+   - Search playbook entries with tags: `playbook`, `discord-study`, `vwap`,
+     `value-area`, `poc`, `dva`, `setup`.
+   - Use those rules to interpret current/previous VWAP, POC, VAH/VAL and
+     Discord prep levels.
 
 Return:
 - Market state for ES/MES and NQ/MNQ.
+- Structured indicator state: price vs VWAP, current VAH/VAL/POC, previous
+  VAH/VAL/POC, delta and any divergence.
 - Key levels and conditions from Discord prep.
+- Which playbook rules apply today, and which do not.
 - 3-5 scenarios for the session.
 - Risk notes / things to avoid.
 - A concise plan I can read before trading.
@@ -96,8 +105,9 @@ Use the available MCP tools in this order:
    - If messages have important chart screenshots, fetch and inspect the images.
 
 2. Sierra:
-   - Call `get_futures_context` for `{futures_symbol}` with interval `1m`.
-   - Call `get_futures_context` for `{nasdaq_symbol}` with interval `1m`.
+   - Call `get_market_features` for `{futures_symbol}` with interval `1m`.
+   - Call `get_market_features` for `{nasdaq_symbol}` with interval `1m`.
+   - Use `get_futures_context` only as a compact secondary read if needed.
 
 3. Journal:
    - Search today's journal entries and recent entries tagged `mistake`,
@@ -105,6 +115,8 @@ Use the available MCP tools in this order:
 
 Return:
 - What actually happened in ES/MES and NQ/MNQ.
+- Whether price accepted/rejected VWAP, current value, previous value, POC,
+  VAH/VAL, and how delta behaved.
 - Which Discord postmarket lessons/setups matter most.
 - Whether the market respected or invalidated the premarket plan.
 - My likely mistakes/opportunities based on journal history.
@@ -140,8 +152,8 @@ Use the available MCP tools:
    - Read recent `writes-up` / weekly recap content if available.
 
 3. Sierra:
-   - Call `get_futures_context` for `{futures_symbol}` and `{nasdaq_symbol}`
-     to anchor the current market regime.
+   - Call `get_market_features` for `{futures_symbol}` and `{nasdaq_symbol}`
+     to anchor the current market regime with VWAP/value/POC/delta.
 
 Return:
 - Weekly performance narrative.
@@ -269,15 +281,15 @@ def list_workflows() -> dict:
         "workflows": [
             {
                 "name": "premarket_review",
-                "description": "Read Discord prep, Sierra futures context and journal memory to build the daily plan.",
+                "description": "Read Discord prep, Sierra market features and journal playbook/risk memory to build the daily plan.",
             },
             {
                 "name": "postmarket_review",
-                "description": "Read Discord postmarket, screenshots, Sierra context and journal memory to review the day.",
+                "description": "Read Discord postmarket/screenshots, Sierra market features and journal memory to review the day.",
             },
             {
                 "name": "weekly_trading_review",
-                "description": "Use journal, Discord write-ups and futures context to summarize the week.",
+                "description": "Use journal, Discord write-ups and Sierra market features to summarize the week.",
             },
             {
                 "name": "discord_study_ingest",
