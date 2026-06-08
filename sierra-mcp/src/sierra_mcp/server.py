@@ -211,6 +211,23 @@ def _profile_context(records: list[scid_reader.TickRecord], tick_size: float, va
     }
 
 
+def _records_for_session(records: list[scid_reader.TickRecord], session_start: float) -> list[scid_reader.TickRecord]:
+    next_start = session_start + 24 * 60 * 60
+    return [r for r in records if session_start <= r.unix_time < next_start]
+
+
+def _previous_nonempty_session_start(records: list[scid_reader.TickRecord], current_start: float) -> float | None:
+    starts = sorted(
+        {
+            _globex_equity_session_start(r.unix_time)
+            for r in records
+            if r.unix_time < current_start
+        },
+        reverse=True,
+    )
+    return starts[0] if starts else None
+
+
 def _position_vs_value(price: float, profile: dict) -> str:
     val = profile.get("val")
     vah = profile.get("vah")
@@ -801,10 +818,10 @@ async def get_market_features(
 
     last_record = records[-1]
     current_start = _globex_equity_session_start(last_record.unix_time)
-    previous_start = current_start - 24 * 60 * 60
+    previous_start = _previous_nonempty_session_start(records, current_start)
 
-    current_records = [r for r in records if r.unix_time >= current_start]
-    previous_records = [r for r in records if previous_start <= r.unix_time < current_start]
+    current_records = _records_for_session(records, current_start)
+    previous_records = _records_for_session(records, previous_start) if previous_start is not None else []
     if not current_records:
         current_records = records
 
@@ -876,6 +893,8 @@ async def get_market_features(
             "tick_size": tick_size,
             "value_area_percent": value_area_percent,
             "session_model": "approx_cme_equity_globex_22utc",
+            "current_session_start": datetime_from_unix(current_start),
+            "previous_session_start": datetime_from_unix(previous_start) if previous_start is not None else None,
         },
         "current_session": current,
         "previous_session": previous,
