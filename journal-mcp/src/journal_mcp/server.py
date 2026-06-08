@@ -16,6 +16,7 @@ from journal_mcp.db import (
     encode_json,
     matches_tags,
     normalize_tags,
+    knowledge_to_dict,
     observation_to_dict,
     trade_to_dict,
     utc_now,
@@ -33,6 +34,29 @@ def _clean_text(value: str | None) -> str | None:
         return None
     stripped = value.strip()
     return stripped or None
+
+
+KNOWLEDGE_KINDS = {
+    "rule",
+    "setup",
+    "glossary",
+    "example",
+    "anti_example",
+    "checklist",
+    "open_question",
+}
+KNOWLEDGE_STATUSES = {"draft", "reviewed", "approved", "active", "stale", "deprecated"}
+KNOWLEDGE_CONFIDENCES = {"explicit", "inferred", "uncertain"}
+
+
+def _normalize_csv(value: str, allowed: set[str], default: set[str]) -> set[str]:
+    if not value.strip():
+        return default
+    out = {part.strip().lower() for part in value.split(",") if part.strip()}
+    invalid = out - allowed
+    if invalid:
+        raise ValueError(f"invalid values: {sorted(invalid)}")
+    return out
 
 
 @mcp.prompt(
@@ -64,10 +88,11 @@ Use the available MCP tools in this order:
 
 3. Journal:
    - Search recent journal entries for tags: `premarket`, `plan`, `futures`, `risk`.
-   - Search playbook entries with tags: `playbook`, `discord-study`, `vwap`,
-     `value-area`, `poc`, `dva`, `setup`.
-   - Use those rules to interpret current/previous VWAP, POC, VAH/VAL and
-     Discord prep levels.
+   - Call `search_knowledge` for approved/active playbook entries with tags:
+     `playbook`, `vwap`, `value-area`, `poc`, `dva`, `setup`.
+   - Use approved/active knowledge to interpret current/previous VWAP, POC,
+     VAH/VAL and Discord prep levels. Do not use draft/stale/deprecated items
+     for decisions unless explicitly marked as context.
 
 Return:
 - Market state for ES/MES and NQ/MNQ.
@@ -112,6 +137,8 @@ Use the available MCP tools in this order:
 3. Journal:
    - Search today's journal entries and recent entries tagged `mistake`,
      `review`, `risk`, `futures`, and `postmarket`.
+   - Call `search_knowledge` for approved/active playbook entries relevant to
+     VWAP/value/POC/delta/setup interpretation.
 
 Return:
 - What actually happened in ES/MES and NQ/MNQ.
@@ -198,17 +225,20 @@ Use the available MCP tools in this order:
    - Distinguish what is explicitly shown/taught from your inference.
 
 3. Journal:
-   - Save each useful concept with `log_observation`.
+   - Save each useful concept with `add_knowledge_item`, not `log_observation`.
+   - Default status should be `draft` until Andreu reviews it.
    - Use tags like `playbook`, `discord-study`, `futures`, plus topic-specific
      tags such as `vwap`, `value-area`, `poc`, `dva`, `delta`, `setup`.
-   - Include source metadata when available: server, group, channel, message_id,
-     attachment filename/url.
+   - Use confidence `explicit` for directly stated rules, `inferred` for your
+     reconstruction, and `uncertain` for ambiguous vocabulary or hypotheses.
+   - Include source/source_ref/metadata when available: server, group, channel,
+     message_id, attachment filename/url.
 
 Return:
 - A concise study summary.
 - A table of extracted rules/setups.
 - Any ambiguous items that need human confirmation.
-- Which observations you saved to the journal.
+- Which draft knowledge items you saved and which should be reviewed/approved.
 """.strip()
 
 
@@ -296,6 +326,333 @@ def list_workflows() -> dict:
                 "description": "Read Discord course messages/screenshots and save structured playbook knowledge.",
             },
         ],
+    }
+
+
+@mcp.tool()
+def add_knowledge_item(
+    kind: str,
+    topic: str,
+    title: str,
+    content: str,
+    tags: list[str] | None = None,
+    status: str = "draft",
+    confidence: str = "uncertain",
+    source: str = "",
+    source_ref: str = "",
+    valid_from: str = "",
+    valid_until: str = "",
+    superseded_by: int | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> dict:
+    """Add a structured playbook/knowledge item.
+
+    Use this for Discord/PPT/video-derived trading-system knowledge that may
+    later be reviewed and approved. Decision workflows should prefer approved
+    or active items over draft/stale/deprecated items.
+    """
+    kind_norm = kind.strip().lower()
+    status_norm = status.strip().lower() or "draft"
+    confidence_norm = confidence.strip().lower() or "uncertain"
+    topic_norm = topic.strip().lower()
+    title = title.strip()
+    content = content.strip()
+
+    if kind_norm not in KNOWLEDGE_KINDS:
+        return {"ok": False, "error": f"kind must be one of {sorted(KNOWLEDGE_KINDS)}"}
+    if status_norm not in KNOWLEDGE_STATUSES:
+        return {"ok": False, "error": f"status must be one of {sorted(KNOWLEDGE_STATUSES)}"}
+    if confidence_norm not in KNOWLEDGE_CONFIDENCES:
+        return {"ok": False, "error": f"confidence must be one of {sorted(KNOWLEDGE_CONFIDENCES)}"}
+    if not topic_norm:
+        return {"ok": False, "error": "topic is required"}
+    if not title:
+        return {"ok": False, "error": "title is required"}
+    if not content:
+        return {"ok": False, "error": "content is required"}
+
+    now = utc_now()
+    with _conn() as conn:
+        if superseded_by is not None:
+            existing = conn.execute(
+                "SELECT id FROM knowledge_items WHERE id = ?",
+                (superseded_by,),
+            ).fetchone()
+            if existing is None:
+                return {"ok": False, "error": f"superseded_by not found: {superseded_by}"}
+
+        cur = conn.execute(
+            """
+            INSERT INTO knowledge_items (
+                created_at, updated_at, kind, topic, title, content, status,
+                confidence, source, source_ref, valid_from, valid_until,
+                superseded_by, tags_json, metadata_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                now,
+                now,
+                kind_norm,
+                topic_norm,
+                title,
+                content,
+                status_norm,
+                confidence_norm,
+                _clean_text(source),
+                _clean_text(source_ref),
+                _clean_text(valid_from),
+                _clean_text(valid_until),
+                superseded_by,
+                encode_json(normalize_tags(tags)),
+                encode_json(metadata or {}),
+            ),
+        )
+        row = conn.execute(
+            "SELECT * FROM knowledge_items WHERE id = ?",
+            (cur.lastrowid,),
+        ).fetchone()
+
+    return {"ok": True, "knowledge": knowledge_to_dict(row)}
+
+
+@mcp.tool()
+def search_knowledge(
+    query: str = "",
+    tags: list[str] | None = None,
+    topic: str = "",
+    kind: str = "",
+    statuses: str = "approved,active",
+    include_historical: bool = False,
+    limit: int = 50,
+) -> dict:
+    """Search structured playbook knowledge.
+
+    By default this returns only approved/active knowledge for decision support.
+    Set include_historical=true to include draft/reviewed/stale/deprecated items.
+    statuses is a comma-separated filter such as "draft,reviewed" or
+    "approved,active".
+    """
+    limit = max(1, min(limit, 500))
+    needle = query.strip().lower()
+    wanted_tags = normalize_tags(tags)
+    topic_norm = topic.strip().lower()
+    kind_norm = kind.strip().lower()
+    if kind_norm and kind_norm not in KNOWLEDGE_KINDS:
+        return {"ok": False, "error": f"kind must be one of {sorted(KNOWLEDGE_KINDS)}"}
+    try:
+        status_filter = _normalize_csv(
+            statuses,
+            KNOWLEDGE_STATUSES,
+            {"approved", "active"},
+        )
+    except ValueError as exc:
+        return {"ok": False, "error": f"statuses {exc}"}
+    if include_historical:
+        status_filter = KNOWLEDGE_STATUSES
+
+    results: list[dict] = []
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM knowledge_items ORDER BY updated_at DESC, created_at DESC LIMIT ?",
+            (limit * 5,),
+        ).fetchall()
+        for row in rows:
+            item = knowledge_to_dict(row)
+            text = " ".join(
+                str(item.get(k) or "")
+                for k in ("kind", "topic", "title", "content", "source", "source_ref", "status", "confidence")
+            )
+            if needle and needle not in text.lower():
+                continue
+            if topic_norm and item["topic"] != topic_norm:
+                continue
+            if kind_norm and item["kind"] != kind_norm:
+                continue
+            if item["status"] not in status_filter:
+                continue
+            if not matches_tags(item["tags"], wanted_tags):
+                continue
+            results.append(item)
+
+    results = results[:limit]
+    return {
+        "ok": True,
+        "count": len(results),
+        "statuses": sorted(status_filter),
+        "results": results,
+    }
+
+
+@mcp.tool()
+def list_knowledge_topics(include_historical: bool = False) -> dict:
+    """List knowledge topics with counts by status."""
+    status_filter = KNOWLEDGE_STATUSES if include_historical else {"approved", "active"}
+    with _conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT topic, status, COUNT(*) AS count
+            FROM knowledge_items
+            GROUP BY topic, status
+            ORDER BY topic, status
+            """
+        ).fetchall()
+
+    topics: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        status = row["status"]
+        if status not in status_filter:
+            continue
+        topic = row["topic"]
+        bucket = topics.setdefault(topic, {"topic": topic, "count": 0, "statuses": {}})
+        bucket["count"] += row["count"]
+        bucket["statuses"][status] = row["count"]
+
+    return {"ok": True, "count": len(topics), "topics": list(topics.values())}
+
+
+@mcp.tool()
+def review_knowledge_item(
+    knowledge_id: int,
+    status: str = "",
+    confidence: str = "",
+    valid_until: str = "",
+    superseded_by: int | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> dict:
+    """Review or update lifecycle fields for a knowledge item."""
+    now = utc_now()
+    status_norm = status.strip().lower()
+    confidence_norm = confidence.strip().lower()
+    if status_norm and status_norm not in KNOWLEDGE_STATUSES:
+        return {"ok": False, "error": f"status must be one of {sorted(KNOWLEDGE_STATUSES)}"}
+    if confidence_norm and confidence_norm not in KNOWLEDGE_CONFIDENCES:
+        return {"ok": False, "error": f"confidence must be one of {sorted(KNOWLEDGE_CONFIDENCES)}"}
+
+    with _conn() as conn:
+        existing = conn.execute(
+            "SELECT * FROM knowledge_items WHERE id = ?",
+            (knowledge_id,),
+        ).fetchone()
+        if existing is None:
+            return {"ok": False, "error": f"knowledge item not found: {knowledge_id}"}
+        if superseded_by is not None:
+            replacement = conn.execute(
+                "SELECT id FROM knowledge_items WHERE id = ?",
+                (superseded_by,),
+            ).fetchone()
+            if replacement is None:
+                return {"ok": False, "error": f"superseded_by not found: {superseded_by}"}
+            if superseded_by == knowledge_id:
+                return {"ok": False, "error": "superseded_by cannot reference the same item"}
+
+        updates: list[str] = ["updated_at = ?"]
+        values: list[Any] = [now]
+        if status_norm:
+            updates.append("status = ?")
+            values.append(status_norm)
+        if confidence_norm:
+            updates.append("confidence = ?")
+            values.append(confidence_norm)
+        if valid_until.strip():
+            updates.append("valid_until = ?")
+            values.append(valid_until.strip())
+        if superseded_by is not None:
+            updates.append("superseded_by = ?")
+            values.append(superseded_by)
+        if metadata is not None:
+            updates.append("metadata_json = ?")
+            values.append(encode_json(metadata))
+
+        values.append(knowledge_id)
+        conn.execute(f"UPDATE knowledge_items SET {', '.join(updates)} WHERE id = ?", values)
+        row = conn.execute(
+            "SELECT * FROM knowledge_items WHERE id = ?",
+            (knowledge_id,),
+        ).fetchone()
+
+    return {"ok": True, "knowledge": knowledge_to_dict(row)}
+
+
+@mcp.tool()
+def promote_observation_to_knowledge(
+    observation_id: int,
+    kind: str,
+    topic: str,
+    title: str = "",
+    status: str = "draft",
+    confidence: str = "uncertain",
+    tags: list[str] | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> dict:
+    """Promote an existing observation into a structured knowledge item.
+
+    Useful for migrating early Discord-study observations into the reviewed
+    playbook lifecycle without losing their original journal history.
+    """
+    kind_norm = kind.strip().lower()
+    status_norm = status.strip().lower() or "draft"
+    confidence_norm = confidence.strip().lower() or "uncertain"
+    topic_norm = topic.strip().lower()
+    if kind_norm not in KNOWLEDGE_KINDS:
+        return {"ok": False, "error": f"kind must be one of {sorted(KNOWLEDGE_KINDS)}"}
+    if status_norm not in KNOWLEDGE_STATUSES:
+        return {"ok": False, "error": f"status must be one of {sorted(KNOWLEDGE_STATUSES)}"}
+    if confidence_norm not in KNOWLEDGE_CONFIDENCES:
+        return {"ok": False, "error": f"confidence must be one of {sorted(KNOWLEDGE_CONFIDENCES)}"}
+    if not topic_norm:
+        return {"ok": False, "error": "topic is required"}
+
+    now = utc_now()
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM observations WHERE id = ?",
+            (observation_id,),
+        ).fetchone()
+        if row is None:
+            return {"ok": False, "error": f"observation not found: {observation_id}"}
+        observation = observation_to_dict(row)
+
+        merged_tags = normalize_tags([*(observation["tags"] or []), *(tags or [])])
+        merged_metadata = {
+            "promoted_from": {"type": "observation", "id": observation_id},
+            "observation_metadata": observation.get("metadata") or {},
+            **(metadata or {}),
+        }
+        cur = conn.execute(
+            """
+            INSERT INTO knowledge_items (
+                created_at, updated_at, kind, topic, title, content, status,
+                confidence, source, source_ref, valid_from, valid_until,
+                superseded_by, tags_json, metadata_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                now,
+                now,
+                kind_norm,
+                topic_norm,
+                title.strip() or (observation["content"][:80] + ("..." if len(observation["content"]) > 80 else "")),
+                observation["content"],
+                status_norm,
+                confidence_norm,
+                observation.get("source"),
+                f"observation:{observation_id}",
+                observation.get("observed_at"),
+                None,
+                None,
+                encode_json(merged_tags),
+                encode_json(merged_metadata),
+            ),
+        )
+        knowledge_row = conn.execute(
+            "SELECT * FROM knowledge_items WHERE id = ?",
+            (cur.lastrowid,),
+        ).fetchone()
+
+    return {
+        "ok": True,
+        "observation": observation,
+        "knowledge": knowledge_to_dict(knowledge_row),
     }
 
 

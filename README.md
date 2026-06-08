@@ -11,7 +11,7 @@ SQLite journal for persistent memory.
 |---|---|---|
 | **sierra-mcp** | Sierra Chart bridge (futures: ES, NQ, MES, MNQ on CME) | `ping_sierra`, `get_quote`, `get_recent_bars` (DTC), `get_recent_bars_scid` (local file), `get_latest_tick_scid`, `get_scid_status`, `get_futures_context`, `get_market_features`, `list_trade_accounts`, `get_account_balance`, `get_positions`, `get_open_orders`, `place_sim_market_order`, `close_sim_position` |
 | **discord-mcp** | Read-only Discord channels as a knowledge base | `list_servers`, `list_channels`, `read_recent_messages`, `search_messages`, `fetch_image`, `list_groups`, `read_group` |
-| **journal-mcp** | Local SQLite memory for observations, trades, and reviews | Tools: `log_observation`, `log_trade`, `update_trade`, `search_journal`, `list_recent`, `daily_summary`, `list_workflows`, `premarket_review`, `postmarket_review`, `weekly_trading_review`, `discord_study_ingest` |
+| **journal-mcp** | Local SQLite memory for observations, trades, reviews, and structured playbook knowledge | Tools: `log_observation`, `log_trade`, `update_trade`, `search_journal`, `list_recent`, `daily_summary`, `add_knowledge_item`, `search_knowledge`, `list_knowledge_topics`, `review_knowledge_item`, `promote_observation_to_knowledge`, `list_workflows`, `premarket_review`, `postmarket_review`, `weekly_trading_review`, `discord_study_ingest` |
 
 Discord is read-only. journal-mcp writes only to a local SQLite journal database.
 sierra-mcp includes tightly-guarded simulation/evaluator-only order tools. Real
@@ -159,6 +159,14 @@ observations and trades, searchable by text, symbol, tags, dates, and kind.
 Use it for market observations, trade plans, post-mortems, recurring mistakes,
 rules, and daily/weekly review raw material.
 
+It also has a structured `knowledge_items` table for playbook knowledge derived
+from Discord/PPT/video/manual review. Knowledge items have lifecycle fields:
+`status` (`draft`, `reviewed`, `approved`, `active`, `stale`, `deprecated`),
+`confidence` (`explicit`, `inferred`, `uncertain`), `kind`, `topic`, source
+references, validity dates and optional `superseded_by`. Trading decision
+workflows should use `search_knowledge` defaults, which return only
+`approved`/`active` items.
+
 It also exposes workflow tools (and matching MCP prompts) that orchestrate the
 other MCPs from Claude Desktop:
 
@@ -166,7 +174,7 @@ other MCPs from Claude Desktop:
 - `postmarket_review`: reads Discord `post`, chart screenshots, Sierra market features, and journal memory.
 - `weekly_trading_review`: summarizes the week from journal + Discord write-ups + current market features.
 - `discord_study_ingest`: reads Discord course channels/screenshots and saves
-  structured playbook rules/setups to the journal.
+  structured draft playbook knowledge for later review/approval.
 
 Example flow:
 

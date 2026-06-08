@@ -229,6 +229,11 @@ Use `groups.yml` for channel taxonomy changes. Do not hardcode channel names in 
 - `search_journal`
 - `list_recent`
 - `daily_summary`
+- `add_knowledge_item`
+- `search_knowledge`
+- `list_knowledge_topics`
+- `review_knowledge_item`
+- `promote_observation_to_knowledge`
 - `list_workflows`
 - `premarket_review`
 - `postmarket_review`
@@ -244,14 +249,15 @@ It also exposes matching MCP prompts:
 
 Use `discord_study_ingest` when the user wants the system to learn from Discord
 course material, screenshots, playbook channels or setup examples. It should use
-Discord `fetch_image` for image attachments and save extracted rules as journal
-observations with source metadata.
+Discord `fetch_image` for image attachments and save extracted rules as draft
+`knowledge_items` with source metadata. Human-reviewed trading rules should be
+marked `approved` or `active`; stale/deprecated/draft items are context only.
 
 Premarket/postmarket workflows should prefer Sierra `get_market_features` over
 `get_futures_context` when reasoning about VWAP, POC, current/previous value,
-VAH/VAL, pVAH/pVAL or delta. Then cross-check journal playbook observations
-tagged `playbook`, `discord-study`, `vwap`, `value-area`, `poc`, `dva`, and
-`setup`.
+VAH/VAL, pVAH/pVAL or delta. Then call `search_knowledge` and use only
+`approved`/`active` playbook items for decisions. Draft/stale/deprecated items
+may be shown for review context but should not drive trade decisions.
 
 Key files:
 
@@ -259,10 +265,12 @@ Key files:
 - `config.py`: loads optional `JOURNAL_DB_PATH`; default is `journal-mcp\data\journal.db`.
 - `db.py`: SQLite schema and row serialization helpers.
 
-The database is local and gitignored. It has two tables today: `observations`
-and `trades`. Keep the schema simple until real Claude Desktop workflows show
-what is missing. Prefer additive migrations when changing the schema after real
-journal data exists.
+The database is local and gitignored. It has three tables today:
+`observations`, `trades`, and `knowledge_items`. Knowledge is the auditable
+playbook layer: `status` (`draft`, `reviewed`, `approved`, `active`, `stale`,
+`deprecated`), `confidence` (`explicit`, `inferred`, `uncertain`), `kind`,
+`topic`, source refs, validity dates and optional `superseded_by`. Prefer
+additive migrations when changing the schema after real journal data exists.
 
 Validated smoke path:
 
@@ -271,7 +279,9 @@ Validated smoke path:
 - close/update trade
 - search by query/tag
 - daily summary
-- prompt text generation for premarket/postmarket/weekly workflows
+- structured knowledge lifecycle and search
+- promote legacy observations into knowledge items
+- prompt text generation for premarket/postmarket/weekly/study workflows
 
 ## Windows And Path Notes
 

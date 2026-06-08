@@ -95,6 +95,35 @@ def init_db(conn: sqlite3.Connection) -> None:
             ON trades(symbol);
         CREATE INDEX IF NOT EXISTS idx_trades_status
             ON trades(status);
+
+        CREATE TABLE IF NOT EXISTS knowledge_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            topic TEXT NOT NULL,
+            title TEXT NOT NULL,
+            content TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'draft',
+            confidence TEXT NOT NULL DEFAULT 'uncertain',
+            source TEXT,
+            source_ref TEXT,
+            valid_from TEXT,
+            valid_until TEXT,
+            superseded_by INTEGER,
+            tags_json TEXT NOT NULL DEFAULT '[]',
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            FOREIGN KEY (superseded_by) REFERENCES knowledge_items(id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_knowledge_created_at
+            ON knowledge_items(created_at);
+        CREATE INDEX IF NOT EXISTS idx_knowledge_topic
+            ON knowledge_items(topic);
+        CREATE INDEX IF NOT EXISTS idx_knowledge_kind
+            ON knowledge_items(kind);
+        CREATE INDEX IF NOT EXISTS idx_knowledge_status
+            ON knowledge_items(status);
         """
     )
     conn.commit()
@@ -134,6 +163,28 @@ def trade_to_dict(row: sqlite3.Row) -> dict[str, Any]:
         "planned_r": row["planned_r"],
         "realized_r": row["realized_r"],
         "notes": row["notes"],
+        "tags": decode_json(row["tags_json"], []),
+        "metadata": decode_json(row["metadata_json"], {}),
+    }
+
+
+def knowledge_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "type": "knowledge",
+        "id": row["id"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+        "kind": row["kind"],
+        "topic": row["topic"],
+        "title": row["title"],
+        "content": row["content"],
+        "status": row["status"],
+        "confidence": row["confidence"],
+        "source": row["source"],
+        "source_ref": row["source_ref"],
+        "valid_from": row["valid_from"],
+        "valid_until": row["valid_until"],
+        "superseded_by": row["superseded_by"],
         "tags": decode_json(row["tags_json"], []),
         "metadata": decode_json(row["metadata_json"], {}),
     }
