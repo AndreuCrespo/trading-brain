@@ -96,3 +96,8 @@ initial balance. Weekly VWAP starts Sunday 22:00 UTC; monthly VWAP starts at
 calendar month 00:00 UTC. If values differ from Sierra visual studies, first
 check session template, value-area percent, tick size, and delayed-vs-live feed
 before changing trading logic.
+
+SCID tools auto-resolve common Sierra symbol aliases such as `MESM26` and
+`MESM26-CME` and choose the file with the freshest last tick. Always inspect
+`resolved_symbol`, `source`, and `latest.tick_age_seconds`/`file_age_seconds`
+before treating indicator output as current.

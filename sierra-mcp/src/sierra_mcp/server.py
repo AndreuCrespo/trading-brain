@@ -120,11 +120,25 @@ def _delta_percent(bid_volume: int | float, ask_volume: int | float) -> float | 
 
 
 def _resolve_scid_path(data_path: str, symbol: str) -> tuple[str, str] | None:
-    for candidate in [symbol, *_symbol_aliases(symbol)]:
+    candidates: list[tuple[str, str, float, float]] = []
+    seen: set[str] = set()
+    for candidate in [symbol.strip().upper(), *_symbol_aliases(symbol)]:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
         path = os.path.join(data_path, f"{candidate}.scid")
         if os.path.exists(path):
-            return candidate, path
-    return None
+            record = scid_reader.read_last_record(path)
+            status = scid_reader.file_status(path)
+            last_record_time = record.unix_time if record is not None else 0.0
+            candidates.append((candidate, path, last_record_time, status["modified_unix"]))
+    if not candidates:
+        return None
+
+    # Sierra may keep both MESM26.scid and MESM26-CME.scid. Pick the file with
+    # the freshest tick first, then the freshest file modification time.
+    best = max(candidates, key=lambda row: (row[2], row[3]))
+    return best[0], best[1]
 
 
 def _validate_sim_order(
@@ -451,9 +465,15 @@ async def get_recent_bars_scid(
     count = max(1, min(count, 5000))
 
     config = Config.from_env()
-    scid_path = os.path.join(config.data_path, f"{symbol}.scid")
-    if not os.path.exists(scid_path):
-        return {"ok": False, "error": f"file not found: {scid_path}"}
+    resolved = _resolve_scid_path(config.data_path, symbol)
+    if resolved is None:
+        return {
+            "ok": False,
+            "error": f"file not found for {symbol}",
+            "tried_symbols": sorted(_symbol_aliases(symbol)),
+            "data_path": config.data_path,
+        }
+    resolved_symbol, scid_path = resolved
 
     # Read ~10x the records we'd theoretically need (assuming ~10 ticks/sec average
     # across market + off-hours), capped at 1M records (40 MB).
@@ -467,6 +487,7 @@ async def get_recent_bars_scid(
     return {
         "ok": True,
         "symbol": symbol,
+        "resolved_symbol": resolved_symbol,
         "interval": interval,
         "count": len(bars),
         "source": scid_path,
@@ -484,9 +505,15 @@ async def get_latest_tick_scid(symbol: str) -> dict:
     freshness. The delay is Sierra's file flush cadence, usually seconds.
     """
     config = Config.from_env()
-    scid_path = os.path.join(config.data_path, f"{symbol}.scid")
-    if not os.path.exists(scid_path):
-        return {"ok": False, "error": f"file not found: {scid_path}"}
+    resolved = _resolve_scid_path(config.data_path, symbol)
+    if resolved is None:
+        return {
+            "ok": False,
+            "error": f"file not found for {symbol}",
+            "tried_symbols": sorted(_symbol_aliases(symbol)),
+            "data_path": config.data_path,
+        }
+    resolved_symbol, scid_path = resolved
 
     record = await asyncio.to_thread(scid_reader.read_last_record, scid_path)
     status = await asyncio.to_thread(scid_reader.file_status, scid_path)
@@ -499,6 +526,7 @@ async def get_latest_tick_scid(symbol: str) -> dict:
     return {
         "ok": True,
         "symbol": symbol,
+        "resolved_symbol": resolved_symbol,
         "source": scid_path,
         "price": record.close,
         "time": datetime_from_unix(record.unix_time),
@@ -517,9 +545,15 @@ async def get_latest_tick_scid(symbol: str) -> dict:
 async def get_scid_status(symbol: str) -> dict:
     """Check whether Sierra's local .scid file for a symbol is being updated."""
     config = Config.from_env()
-    scid_path = os.path.join(config.data_path, f"{symbol}.scid")
-    if not os.path.exists(scid_path):
-        return {"ok": False, "error": f"file not found: {scid_path}"}
+    resolved = _resolve_scid_path(config.data_path, symbol)
+    if resolved is None:
+        return {
+            "ok": False,
+            "error": f"file not found for {symbol}",
+            "tried_symbols": sorted(_symbol_aliases(symbol)),
+            "data_path": config.data_path,
+        }
+    resolved_symbol, scid_path = resolved
 
     record = await asyncio.to_thread(scid_reader.read_last_record, scid_path)
     status = await asyncio.to_thread(scid_reader.file_status, scid_path)
@@ -527,6 +561,7 @@ async def get_scid_status(symbol: str) -> dict:
     out = {
         "ok": True,
         "symbol": symbol,
+        "resolved_symbol": resolved_symbol,
         **status,
         "file_age_seconds": round(max(0.0, now - status["modified_unix"]), 3),
     }
@@ -561,9 +596,15 @@ async def get_futures_context(
     interval_sec = INTERVAL_SECONDS[interval]
 
     config = Config.from_env()
-    scid_path = os.path.join(config.data_path, f"{symbol}.scid")
-    if not os.path.exists(scid_path):
-        return {"ok": False, "error": f"file not found: {scid_path}"}
+    resolved = _resolve_scid_path(config.data_path, symbol)
+    if resolved is None:
+        return {
+            "ok": False,
+            "error": f"file not found for {symbol}",
+            "tried_symbols": sorted(_symbol_aliases(symbol)),
+            "data_path": config.data_path,
+        }
+    resolved_symbol, scid_path = resolved
 
     records = await asyncio.to_thread(
         scid_reader.read_tail_records,
@@ -610,6 +651,7 @@ async def get_futures_context(
     return {
         "ok": True,
         "symbol": symbol,
+        "resolved_symbol": resolved_symbol,
         "interval": interval,
         "source": scid_path,
         "latest": {
