@@ -4,7 +4,6 @@ import os
 import sys
 import time
 import uuid
-from collections import defaultdict
 from datetime import datetime, time as dt_time, timedelta, timezone
 from pathlib import Path
 
@@ -19,7 +18,7 @@ from mcp.server.fastmcp import FastMCP
 from sierra_mcp.config import Config
 from sierra_mcp.dtc_client import DTCClient
 from sierra_mcp.dtc_messages import BuySell, MessageType, OpenCloseTrade, OrderType, TimeInForce
-from sierra_mcp import scid_reader
+from sierra_mcp import indicator_engine, scid_reader
 
 logging.basicConfig(level=logging.INFO)
 
@@ -118,130 +117,6 @@ def _delta_percent(bid_volume: int | float, ask_volume: int | float) -> float | 
     if total <= 0:
         return None
     return round((ask_volume - bid_volume) / total * 100, 2)
-
-
-def _round_to_tick(price: float, tick_size: float) -> float:
-    return round(round(price / tick_size) * tick_size, 10)
-
-
-def _volume_profile(
-    records: list[scid_reader.TickRecord],
-    tick_size: float,
-    value_area_percent: float,
-) -> dict:
-    if not records:
-        return {}
-
-    volume_by_price: defaultdict[float, int] = defaultdict(int)
-    bid_volume_by_price: defaultdict[float, int] = defaultdict(int)
-    ask_volume_by_price: defaultdict[float, int] = defaultdict(int)
-    for r in records:
-        price = _round_to_tick(float(r.close), tick_size)
-        volume_by_price[price] += int(r.volume)
-        bid_volume_by_price[price] += int(r.bid_volume)
-        ask_volume_by_price[price] += int(r.ask_volume)
-
-    if not volume_by_price:
-        return {}
-
-    prices = sorted(volume_by_price)
-    total_volume = sum(volume_by_price.values())
-    poc = max(prices, key=lambda p: (volume_by_price[p], -abs(p - records[-1].close)))
-    target_volume = total_volume * value_area_percent
-
-    selected = {poc}
-    selected_volume = volume_by_price[poc]
-    poc_index = prices.index(poc)
-    low_index = poc_index
-    high_index = poc_index
-
-    while selected_volume < target_volume and (low_index > 0 or high_index < len(prices) - 1):
-        below_price = prices[low_index - 1] if low_index > 0 else None
-        above_price = prices[high_index + 1] if high_index < len(prices) - 1 else None
-        below_volume = volume_by_price[below_price] if below_price is not None else -1
-        above_volume = volume_by_price[above_price] if above_price is not None else -1
-
-        if above_volume >= below_volume and above_price is not None:
-            high_index += 1
-            selected.add(above_price)
-            selected_volume += above_volume
-        elif below_price is not None:
-            low_index -= 1
-            selected.add(below_price)
-            selected_volume += below_volume
-        else:
-            break
-
-    high_volume_nodes = sorted(
-        (
-            {
-                "price": p,
-                "volume": volume_by_price[p],
-                "bid_volume": bid_volume_by_price[p],
-                "ask_volume": ask_volume_by_price[p],
-                "delta": ask_volume_by_price[p] - bid_volume_by_price[p],
-            }
-            for p in prices
-        ),
-        key=lambda row: row["volume"],
-        reverse=True,
-    )[:10]
-
-    return {
-        "tick_size": tick_size,
-        "value_area_percent": value_area_percent,
-        "poc": poc,
-        "vah": max(selected),
-        "val": min(selected),
-        "value_area_volume": selected_volume,
-        "total_volume": total_volume,
-        "value_area_actual_percent": round(selected_volume / total_volume * 100, 2) if total_volume else None,
-        "high_volume_nodes": high_volume_nodes,
-    }
-
-
-def _profile_context(records: list[scid_reader.TickRecord], tick_size: float, value_area_percent: float) -> dict:
-    stats = scid_reader.aggregate_session_stats(records)
-    profile = _volume_profile(records, tick_size, value_area_percent)
-    if not stats:
-        return {}
-    return {
-        **stats,
-        "volume_profile": profile,
-    }
-
-
-def _records_for_session(records: list[scid_reader.TickRecord], session_start: float) -> list[scid_reader.TickRecord]:
-    next_start = session_start + 24 * 60 * 60
-    return [r for r in records if session_start <= r.unix_time < next_start]
-
-
-def _previous_nonempty_session_start(records: list[scid_reader.TickRecord], current_start: float) -> float | None:
-    starts = sorted(
-        {
-            _globex_equity_session_start(r.unix_time)
-            for r in records
-            if r.unix_time < current_start
-        },
-        reverse=True,
-    )
-    return starts[0] if starts else None
-
-
-def _position_vs_value(price: float, profile: dict) -> str:
-    val = profile.get("val")
-    vah = profile.get("vah")
-    if val is None or vah is None:
-        return "unknown"
-    if price > vah:
-        return "above_value"
-    if price < val:
-        return "below_value"
-    return "inside_value"
-
-
-def _distance(price: float, level: float | None) -> float | None:
-    return round(price - level, 4) if level is not None else None
 
 
 def _resolve_scid_path(data_path: str, symbol: str) -> tuple[str, str] | None:
@@ -817,25 +692,17 @@ async def get_market_features(
         return {"ok": False, "error": f"no records in file: {scid_path}"}
 
     last_record = records[-1]
-    current_start = _globex_equity_session_start(last_record.unix_time)
-    previous_start = _previous_nonempty_session_start(records, current_start)
-
-    current_records = _records_for_session(records, current_start)
-    previous_records = _records_for_session(records, previous_start) if previous_start is not None else []
-    if not current_records:
-        current_records = records
-
-    current = _profile_context(current_records, tick_size, value_area_percent)
-    previous = _profile_context(previous_records, tick_size, value_area_percent)
-
+    features = indicator_engine.build_market_features(records, tick_size, value_area_percent)
     bars = scid_reader.aggregate_to_bars(records, interval_sec)[-bars_count:]
     status = await asyncio.to_thread(scid_reader.file_status, scid_path)
 
     latest_price = float(last_record.close)
-    current_profile = current.get("volume_profile", {})
-    previous_profile = previous.get("volume_profile", {})
-    current_vwap = current.get("vwap")
-    previous_vwap = previous.get("vwap")
+    current_start = features["current_start"]
+    previous_start = features["previous_start"]
+    current_records = features["current_records"]
+    previous_records = features["previous_records"]
+    current = features["current_session"]
+    previous = features["previous_session"]
 
     warnings: list[str] = []
     now = time.time()
@@ -847,31 +714,6 @@ async def get_market_features(
         warnings.append(f"last tick is stale by {tick_age:.1f}s")
     if not previous:
         warnings.append("previous Globex session unavailable in loaded SCID tail")
-
-    relationships = {
-        "current_value_location": _position_vs_value(latest_price, current_profile),
-        "previous_value_location": _position_vs_value(latest_price, previous_profile),
-        "distance_to_current_vwap": _distance(latest_price, current_vwap),
-        "distance_to_previous_vwap": _distance(latest_price, previous_vwap),
-        "distance_to_current_vah": _distance(latest_price, current_profile.get("vah")),
-        "distance_to_current_val": _distance(latest_price, current_profile.get("val")),
-        "distance_to_current_poc": _distance(latest_price, current_profile.get("poc")),
-        "distance_to_previous_vah": _distance(latest_price, previous_profile.get("vah")),
-        "distance_to_previous_val": _distance(latest_price, previous_profile.get("val")),
-        "distance_to_previous_poc": _distance(latest_price, previous_profile.get("poc")),
-    }
-
-    read_parts: list[str] = []
-    current_loc = relationships["current_value_location"]
-    previous_loc = relationships["previous_value_location"]
-    if current_loc != "unknown":
-        read_parts.append(f"price_{current_loc}_current_value")
-    if previous_loc != "unknown":
-        read_parts.append(f"price_{previous_loc}_previous_value")
-    if current_vwap is not None:
-        read_parts.append("above_current_vwap" if latest_price > current_vwap else "below_current_vwap")
-    if current.get("delta") is not None:
-        read_parts.append("positive_delta" if current["delta"] > 0 else "negative_delta")
 
     return {
         "ok": True,
@@ -898,9 +740,10 @@ async def get_market_features(
         },
         "current_session": current,
         "previous_session": previous,
-        "relationships": relationships,
+        "relationships": features["relationships"],
+        "derived_levels": features["derived_levels"],
         "read": {
-            "tags": read_parts,
+            "tags": features["read_tags"],
             "warnings": warnings,
         },
         "bars": bars,
@@ -913,6 +756,208 @@ async def get_market_features(
             "record_count": status["record_count"],
             "modified_time": status["modified_time"],
         },
+    }
+
+
+@mcp.tool()
+async def get_indicator_levels(
+    symbol: str,
+    tick_size: float = 0.25,
+    value_area_percent: float = 0.70,
+) -> dict:
+    """Return a compact indicator-level pack calculated from local SCID ticks.
+
+    Use this when the user asks for "indicadores", VWAP/value levels, IB/ON,
+    ADR or anchored VWAPs. This is a compact view over `get_market_features`:
+    it does not read Sierra Chart visual studies and it inherits SCID/feed delay.
+    """
+    features = await get_market_features(
+        symbol=symbol,
+        interval="1m",
+        bars_count=5,
+        tick_size=tick_size,
+        value_area_percent=value_area_percent,
+    )
+    if not features.get("ok"):
+        return features
+
+    current = features.get("current_session", {})
+    previous = features.get("previous_session", {})
+    current_profile = current.get("volume_profile", {})
+    previous_profile = previous.get("volume_profile", {})
+    derived = features.get("derived_levels", {})
+
+    return {
+        "ok": True,
+        "symbol": features.get("symbol"),
+        "resolved_symbol": features.get("resolved_symbol"),
+        "source": features.get("source"),
+        "latest": features.get("latest"),
+        "settings": features.get("settings"),
+        "current": {
+            "vwap": current.get("vwap"),
+            "poc": current_profile.get("poc"),
+            "vah": current_profile.get("vah"),
+            "val": current_profile.get("val"),
+            "high": current.get("high"),
+            "low": current.get("low"),
+            "volume": current.get("volume"),
+            "delta": current.get("delta"),
+        },
+        "previous": {
+            "vwap": previous.get("vwap"),
+            "poc": previous_profile.get("poc"),
+            "vah": previous_profile.get("vah"),
+            "val": previous_profile.get("val"),
+            "high": previous.get("high"),
+            "low": previous.get("low"),
+            "volume": previous.get("volume"),
+            "delta": previous.get("delta"),
+        },
+        "playbook_levels": {
+            "overnight": derived.get("overnight"),
+            "initial_balance": derived.get("initial_balance"),
+            "previous_day": derived.get("previous_day"),
+            "adr": derived.get("adr"),
+            "anchored_vwaps": derived.get("anchored_vwaps"),
+            "distances": derived.get("distances"),
+        },
+        "relationships": features.get("relationships"),
+        "read": features.get("read"),
+    }
+
+
+def _normalize_level_name(name: str) -> str:
+    return "".join(ch for ch in name.lower() if ch.isalnum())
+
+
+def _indicator_level_map(indicators: dict) -> dict[str, float]:
+    current = indicators.get("current", {})
+    previous = indicators.get("previous", {})
+    playbook = indicators.get("playbook_levels", {})
+    overnight = playbook.get("overnight") or {}
+    initial_balance = playbook.get("initial_balance") or {}
+    previous_day = playbook.get("previous_day") or {}
+    anchored = playbook.get("anchored_vwaps") or {}
+    weekly = anchored.get("weekly") or {}
+    monthly = anchored.get("monthly") or {}
+
+    raw_levels = {
+        "vwap": current.get("vwap"),
+        "current_vwap": current.get("vwap"),
+        "poc": current.get("poc"),
+        "current_poc": current.get("poc"),
+        "vah": current.get("vah"),
+        "current_vah": current.get("vah"),
+        "val": current.get("val"),
+        "current_val": current.get("val"),
+        "previous_vwap": previous.get("vwap"),
+        "pvwap": previous.get("vwap"),
+        "previous_poc": previous.get("poc"),
+        "ppoc": previous.get("poc"),
+        "previous_vah": previous.get("vah"),
+        "pvah": previous.get("vah"),
+        "previous_val": previous.get("val"),
+        "pval": previous.get("val"),
+        "onh": overnight.get("high"),
+        "onl": overnight.get("low"),
+        "ibh": initial_balance.get("high"),
+        "ibl": initial_balance.get("low"),
+        "phod": previous_day.get("high"),
+        "plod": previous_day.get("low"),
+        "weekly_vwap": weekly.get("vwap"),
+        "wvwap": weekly.get("vwap"),
+        "monthly_vwap": monthly.get("vwap"),
+        "mvwap": monthly.get("vwap"),
+    }
+    return {
+        _normalize_level_name(name): float(value)
+        for name, value in raw_levels.items()
+        if value is not None
+    }
+
+
+@mcp.tool()
+async def compare_indicator_levels(
+    symbol: str,
+    reference_levels: dict,
+    tick_size: float = 0.25,
+    tolerance_ticks: float = 2.0,
+    value_area_percent: float = 0.70,
+) -> dict:
+    """Compare MCP-calculated indicator levels against Sierra visual-study values.
+
+    `reference_levels` should be a mapping of level names to prices, for example:
+    {"vwap": 7436.25, "poc": 7445.0, "vah": 7470.5, "val": 7424.0}.
+
+    Supported names include vwap/current_vwap, poc, vah, val, pVAH, pVAL, pPOC,
+    pVWAP, ONH, ONL, IBH, IBL, pHOD, pLOD, wVWAP and mVWAP. The comparison is
+    useful for calibrating session templates, tick size and value-area settings.
+    """
+    if tick_size <= 0:
+        return {"ok": False, "error": "tick_size must be positive"}
+    if tolerance_ticks < 0:
+        return {"ok": False, "error": "tolerance_ticks must be non-negative"}
+    if not isinstance(reference_levels, dict) or not reference_levels:
+        return {"ok": False, "error": "reference_levels must be a non-empty object"}
+
+    indicators = await get_indicator_levels(
+        symbol=symbol,
+        tick_size=tick_size,
+        value_area_percent=value_area_percent,
+    )
+    if not indicators.get("ok"):
+        return indicators
+
+    calculated = _indicator_level_map(indicators)
+    comparisons = []
+    unknown_levels = []
+    for name, ref_value in reference_levels.items():
+        normalized = _normalize_level_name(str(name))
+        calc_value = calculated.get(normalized)
+        if calc_value is None:
+            unknown_levels.append(str(name))
+            comparisons.append({
+                "name": str(name),
+                "ok": False,
+                "error": "unknown or unavailable calculated level",
+            })
+            continue
+
+        try:
+            reference = float(ref_value)
+        except (TypeError, ValueError):
+            comparisons.append({
+                "name": str(name),
+                "ok": False,
+                "error": "reference value must be numeric",
+            })
+            continue
+
+        diff_points = round(calc_value - reference, 6)
+        diff_ticks = round(diff_points / tick_size, 3)
+        within = abs(diff_ticks) <= tolerance_ticks
+        comparisons.append({
+            "name": str(name),
+            "ok": within,
+            "calculated": calc_value,
+            "reference": reference,
+            "diff_points": diff_points,
+            "diff_ticks": diff_ticks,
+        })
+
+    comparable = [row for row in comparisons if "diff_ticks" in row]
+    return {
+        "ok": True,
+        "symbol": indicators.get("symbol"),
+        "resolved_symbol": indicators.get("resolved_symbol"),
+        "tolerance_ticks": tolerance_ticks,
+        "all_within_tolerance": bool(comparable) and all(row["ok"] for row in comparable),
+        "comparisons": comparisons,
+        "unknown_levels": unknown_levels,
+        "available_level_names": sorted(calculated),
+        "latest": indicators.get("latest"),
+        "read": indicators.get("read"),
     }
 
 

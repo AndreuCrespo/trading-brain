@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-An MCP (Model Context Protocol) server that bridges Claude to **Sierra Chart** via the **DTC Protocol**. Targets ES and NQ futures trading. Current scope is **read-only** — quotes, positions, balance, historical bars. Order placement is deliberately out of scope until the read path is validated.
+An MCP (Model Context Protocol) server that bridges Claude to **Sierra Chart** via the **DTC Protocol** and local `.scid` files. Targets ES/MES and NQ/MNQ futures trading. Market read tools are the main path; simulation/evaluator order tools exist but must remain guarded by `safety.json`, symbol/account allowlists, max size, rationale, and explicit confirmation.
 
 ## Commands
 
@@ -49,7 +49,9 @@ Three layers, top to bottom:
 
 1. **`server.py`** — `FastMCP` server. Each `@mcp.tool()` is what Claude sees. Tools currently open a fresh `DTCClient`, do their work, and close it in `finally`. Order tools are simulation/evaluator-only and must stay guarded by `safety.json`, symbol allowlists, max quantity, rationale, and explicit confirmation. If we add long-lived subscriptions (streaming quotes, position updates), the client should move to module-level lifespan management.
 
-2. **`dtc_client.py`** — async DTC client over `asyncio.open_connection`. The wire format is JSON objects terminated by `\x00`. The key pattern is **subscribe-then-send**:
+2. **`indicator_engine.py`** — structured indicator calculations over SCID tick records. It calculates VWAP, value area, POC, delta, IBH/IBL, ONH/ONL, pHOD/pLOD, ADR, weekly VWAP, monthly VWAP and anchored VWAP deviation bands. This is the preferred path for system-learning work because it gives Claude explicit numbers instead of relying on visual chart studies.
+
+3. **`dtc_client.py`** — async DTC client over `asyncio.open_connection`. The wire format is JSON objects terminated by `\x00`. The key pattern is **subscribe-then-send**:
    ```python
    queue = client._subscribe(MessageType.SOME_RESPONSE)
    try:
@@ -60,7 +62,7 @@ Three layers, top to bottom:
    ```
    Always subscribe *before* sending — the response may arrive before the await otherwise. A background `_read_loop` dispatches incoming messages to subscriber queues by `Type`. Heartbeats are sent on `_heartbeat_loop` at `config.heartbeat_interval`.
 
-3. **`dtc_messages.py`** — `MessageType` IntEnum for DTC message codes. Most field names in messages follow CamelCase per the DTC spec (`Username`, `HeartbeatIntervalInSeconds`, `Result`, etc.).
+4. **`dtc_messages.py`** — `MessageType` IntEnum for DTC message codes. Most field names in messages follow CamelCase per the DTC spec (`Username`, `HeartbeatIntervalInSeconds`, `Result`, etc.).
 
 ### Two separate connections
 
@@ -80,8 +82,17 @@ Some DTC requests yield a stream of responses (positions, historical bars), term
 
 The exact DTC field names (e.g., `TradingIsSupported` vs `TradeIsSupported`) and a few of the less-common message type numbers were written from spec memory and need verification against Sierra Chart's actual responses. If a tool returns empty/wrong data, check Sierra Chart's *Message Log* window first — it shows the raw JSON in both directions.
 
-`get_market_features` is the first indicator-engine tool. It intentionally
-calculates VWAP, value area, POC and delta from local `.scid` ticks instead of
-reading chart studies visually. Keep future system-learning work on structured
-features first, with Discord screenshots ingested offline into journal/knowledge
-records rather than inspected at trade time.
+`get_market_features` and the compact `get_indicator_levels` tool intentionally
+calculate indicator levels from local `.scid` ticks instead of reading chart
+studies visually. Use `compare_indicator_levels` when validating these
+calculations against Sierra visual-study values from the chart. Keep future
+system-learning work on structured features first, with Discord screenshots
+ingested offline into journal/knowledge records rather than inspected at trade
+time.
+
+The indicator engine uses an approximate CME equity-index session model:
+Globex start fixed at 22:00 UTC, RTH open fixed at 13:30 UTC, and 60-minute
+initial balance. Weekly VWAP starts Sunday 22:00 UTC; monthly VWAP starts at
+calendar month 00:00 UTC. If values differ from Sierra visual studies, first
+check session template, value-area percent, tick size, and delayed-vs-live feed
+before changing trading logic.
