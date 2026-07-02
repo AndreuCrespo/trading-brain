@@ -4,7 +4,7 @@ import os
 import sys
 import time
 import uuid
-from datetime import datetime, time as dt_time, timedelta, timezone
+from datetime import date, datetime, time as dt_time, timedelta, timezone
 from pathlib import Path
 
 # When loaded by `mcp dev` (which imports this file by path, not as a package),
@@ -43,7 +43,16 @@ INTERVAL_SECONDS = {
 
 SESSION_LOOKBACK_RECORDS = 1_000_000
 FEATURES_LOOKBACK_RECORDS = 2_000_000
-SIM_ALLOWED_SYMBOLS = {"MESM26", "MESM26-CME", "MNQM26", "MNQM26-CME"}
+FUTURES_ROOTS = {
+    "ES": "E-mini S&P 500",
+    "MES": "Micro E-mini S&P 500",
+    "NQ": "E-mini Nasdaq 100",
+    "MNQ": "Micro E-mini Nasdaq 100",
+}
+SIM_ALLOWED_ROOTS = {"MES", "MNQ"}
+CME_QUARTERLY_MONTH_CODES = ((3, "H"), (6, "M"), (9, "U"), (12, "Z"))
+CME_MONTH_CODE_TO_MONTH = {code: month for month, code in CME_QUARTERLY_MONTH_CODES}
+DEFAULT_ROLL_DAYS_BEFORE_EXPIRY = 8
 SIM_MAX_QUANTITY = 1
 TERMINAL_ORDER_STATUSES = {7, 8, 9}
 TERMINAL_ORDER_REASONS = {4, 6, 8, 9, 10}
@@ -119,6 +128,73 @@ def _delta_percent(bid_volume: int | float, ask_volume: int | float) -> float | 
     return round((ask_volume - bid_volume) / total * 100, 2)
 
 
+def _third_friday(year: int, month: int) -> date:
+    first = date(year, month, 1)
+    days_to_friday = (4 - first.weekday()) % 7
+    first_friday = first + timedelta(days=days_to_friday)
+    return first_friday + timedelta(days=14)
+
+
+def _contract_symbol(root: str, year: int, month: int) -> str:
+    month_code = dict(CME_QUARTERLY_MONTH_CODES)[month]
+    return f"{root}{month_code}{str(year)[-2:]}"
+
+
+def _active_contract_info(
+    root: str,
+    as_of: date | None = None,
+    roll_days_before_expiry: int = DEFAULT_ROLL_DAYS_BEFORE_EXPIRY,
+) -> dict:
+    root = root.strip().upper()
+    if root not in FUTURES_ROOTS:
+        raise ValueError(f"root must be one of {sorted(FUTURES_ROOTS)}")
+    roll_days_before_expiry = max(0, min(int(roll_days_before_expiry), 30))
+    as_of = as_of or datetime.now(timezone.utc).date()
+
+    for year in range(as_of.year, as_of.year + 3):
+        for month, month_code in CME_QUARTERLY_MONTH_CODES:
+            expiry = _third_friday(year, month)
+            roll_date = expiry - timedelta(days=roll_days_before_expiry)
+            if as_of <= roll_date:
+                symbol = _contract_symbol(root, year, month)
+                return {
+                    "root": root,
+                    "description": FUTURES_ROOTS[root],
+                    "symbol": symbol,
+                    "symbol_cme": f"{symbol}-CME",
+                    "contract_month": month,
+                    "contract_month_code": month_code,
+                    "contract_year": year,
+                    "expiration_date": expiry.isoformat(),
+                    "roll_date": roll_date.isoformat(),
+                    "roll_days_before_expiry": roll_days_before_expiry,
+                    "as_of_date": as_of.isoformat(),
+                }
+
+    raise ValueError(f"could not resolve active contract for {root}")
+
+
+def _parse_as_of_date(as_of_date: str) -> date | None:
+    as_of_date = as_of_date.strip()
+    if not as_of_date:
+        return None
+    return date.fromisoformat(as_of_date)
+
+
+def _active_sim_symbols() -> set[str]:
+    symbols: set[str] = set()
+    for root in sorted(SIM_ALLOWED_ROOTS):
+        info = _active_contract_info(root)
+        symbols.add(info["symbol"])
+        symbols.add(info["symbol_cme"])
+    return symbols
+
+
+def _sim_symbol_allowed(symbol: str) -> bool:
+    symbol = symbol.strip().upper()
+    return bool(_symbol_aliases(symbol) & _active_sim_symbols())
+
+
 def _resolve_scid_path(data_path: str, symbol: str) -> tuple[str, str] | None:
     candidates: list[tuple[str, str, float, float]] = []
     seen: set[str] = set()
@@ -161,11 +237,14 @@ def _validate_sim_order(
             "error": f"trade_account not allowed for sim orders: {trade_account}",
             "allowed_accounts": list(allowed_sim_accounts),
         }
-    if symbol not in SIM_ALLOWED_SYMBOLS:
+    allowed_symbols = _active_sim_symbols()
+    if not _sim_symbol_allowed(symbol):
         return {
             "ok": False,
             "error": f"symbol not allowed for sim orders: {symbol}",
-            "allowed_symbols": sorted(SIM_ALLOWED_SYMBOLS),
+            "allowed_symbols": sorted(allowed_symbols),
+            "allowed_roots": sorted(SIM_ALLOWED_ROOTS),
+            "contract_policy": "current active quarterly MES/MNQ contracts only",
         }
     if side.lower() not in {"buy", "sell"}:
         return {"ok": False, "error": "side must be buy or sell"}
@@ -248,6 +327,29 @@ def _globex_equity_session_start(last_tick_unix: float) -> float:
 
 
 @mcp.tool()
+async def get_active_futures_contract(
+    root: str = "MES",
+    as_of_date: str = "",
+    roll_days_before_expiry: int = DEFAULT_ROLL_DAYS_BEFORE_EXPIRY,
+) -> dict:
+    """Resolve the active quarterly CME equity-index futures contract.
+
+    root: one of ES, MES, NQ, MNQ.
+    as_of_date: optional YYYY-MM-DD override for deterministic rollover checks.
+    roll_days_before_expiry: default 8, so the tool rolls before expiration week.
+
+    Use this before market reads or sim orders when the user says "MES", "MNQ",
+    "ES" or "Nasdaq" without an explicit contract month.
+    """
+    try:
+        as_of = _parse_as_of_date(as_of_date)
+        info = _active_contract_info(root, as_of, roll_days_before_expiry)
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    return {"ok": True, **info}
+
+
+@mcp.tool()
 async def ping_sierra() -> dict:
     """Connect to Sierra Chart via DTC, perform logon, and return the logon response.
 
@@ -275,9 +377,9 @@ async def ping_sierra() -> dict:
 async def get_quote(symbol: str, exchange: str = "CME") -> dict:
     """Get a real-time market data snapshot for a symbol.
 
-    symbol: Sierra Chart contract symbol. Examples for current front-month futures:
-            "ESM26-CME" (E-mini S&P 500 Jun 2026), "NQM26-CME" (E-mini Nasdaq Jun 2026),
-            "MESM26-CME" (Micro E-mini S&P), "MNQM26-CME" (Micro E-mini Nasdaq).
+    symbol: Sierra Chart contract symbol. Resolve current front-month contracts
+            with get_active_futures_contract first, e.g. root="MES" -> "MESU26"
+            after June 2026 rollover.
             Continuous contracts use a '#' suffix: "ES#-CME".
     exchange: Exchange code (e.g. "CME", "CBOT", "NYMEX"). Defaults to "CME".
 
@@ -355,7 +457,7 @@ async def get_recent_bars(
     feed restricts redistribution). The last bar's close approximates the most
     recent known price.
 
-    symbol: Contract symbol, e.g. "MESM26-CME", "NQM26-CME".
+    symbol: Contract symbol, e.g. "MESU26", "MNQU26".
     interval: One of "tick", "1s", "1m", "5m", "15m", "30m", "1h", "4h", "1d".
     count: Number of most recent bars to return (default 100, hard cap 5000).
     exchange: Exchange code, default "CME".
@@ -454,7 +556,7 @@ async def get_recent_bars_scid(
     Works without DTC market data permission — reads the local file Sierra writes.
     Lags real-time by however often Sierra flushes ticks to disk (usually seconds).
 
-    symbol: e.g. "MESM26-CME". A file <symbol>.scid must exist in the data dir.
+    symbol: e.g. "MESU26". A matching .scid alias must exist in the data dir.
     interval: One of "1m", "5m", "15m", "30m", "1h", "4h", "1d".
     count: Number of most recent bars to return (default 100, cap 5000).
     """
@@ -1336,7 +1438,7 @@ async def place_sim_market_order(
         "safety": {
             "sim_account_only": True,
             "allowed_accounts": list(config.allowed_sim_accounts),
-            "allowed_symbols": sorted(SIM_ALLOWED_SYMBOLS),
+            "allowed_symbols": sorted(_active_sim_symbols()),
             "max_quantity": SIM_MAX_QUANTITY,
         },
     }
@@ -1440,7 +1542,7 @@ async def close_sim_position(
         "safety": {
             "sim_account_only": True,
             "allowed_accounts": list(config.allowed_sim_accounts),
-            "allowed_symbols": sorted(SIM_ALLOWED_SYMBOLS),
+            "allowed_symbols": sorted(_active_sim_symbols()),
             "max_quantity": SIM_MAX_QUANTITY,
         },
     }

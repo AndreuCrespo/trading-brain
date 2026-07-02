@@ -42,6 +42,9 @@ For local chart-only simulation, enable *Trade -> Trade Simulation Mode*. For se
 
 Connection params come from env vars (see `config.py`): `SIERRA_DTC_HOST`, `SIERRA_DTC_PORT`, `SIERRA_DTC_HISTORICAL_PORT`, `SIERRA_DTC_USERNAME`, `SIERRA_DTC_PASSWORD`, `SIERRA_DTC_CLIENT_NAME`, `SIERRA_DTC_HEARTBEAT`.
 Order tools also require local `safety.json` with `allowed_sim_accounts`; use `safety.example.json` as the template.
+Order symbols are restricted to the active quarterly MES/MNQ contracts resolved
+by `get_active_futures_contract`; do not hard-code old contract months in
+workflows.
 
 ## Architecture
 
@@ -101,3 +104,8 @@ SCID tools auto-resolve common Sierra symbol aliases such as `MESM26` and
 `MESM26-CME` and choose the file with the freshest last tick. Always inspect
 `resolved_symbol`, `source`, and `latest.tick_age_seconds`/`file_age_seconds`
 before treating indicator output as current.
+
+Use `get_active_futures_contract` before futures workflows when the user says
+MES/MNQ/ES/NQ without an explicit contract month. It resolves the current
+quarterly contract using an 8-calendar-day pre-expiry roll window by default
+(for example MES rolls from `MESM26` to `MESU26` after the June 2026 roll).
