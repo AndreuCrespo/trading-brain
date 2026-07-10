@@ -279,6 +279,8 @@ Use `groups.yml` for channel taxonomy changes. Do not hardcode channel names in 
 - `list_knowledge_topics`
 - `review_knowledge_item`
 - `promote_observation_to_knowledge`
+- `export_playbook`
+- `import_playbook`
 - `list_workflows`
 - `premarket_review`
 - `postmarket_review`
@@ -319,6 +321,14 @@ playbook layer: `status` (`draft`, `reviewed`, `approved`, `active`, `stale`,
 `deprecated`), `confidence` (`explicit`, `inferred`, `uncertain`), `kind`,
 `topic`, source refs, validity dates and optional `superseded_by`. Prefer
 additive migrations when changing the schema after real journal data exists.
+
+Playbook sharing between trading-brain instances uses `export_playbook` /
+`import_playbook` (single-DB design, no split): export writes a JSON snapshot
+of knowledge items (default approved/active only; observations and trades are
+never exported) under `journal-mcp/data/exports/`, and import is idempotent —
+items matching an existing (topic, title) are skipped and `superseded_by`
+references are remapped to local ids. Exports contain donAdri course-derived
+content: share them privately with course members only, never commit them.
 
 Validated smoke path:
 

@@ -1,3 +1,4 @@
+import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -653,6 +654,194 @@ def promote_observation_to_knowledge(
         "ok": True,
         "observation": observation,
         "knowledge": knowledge_to_dict(knowledge_row),
+    }
+
+
+PLAYBOOK_EXPORT_FORMAT = "trading-brain-playbook-v1"
+
+
+@mcp.tool()
+def export_playbook(
+    path: str = "",
+    statuses: str = "approved,active",
+    include_historical: bool = False,
+) -> dict:
+    """Export knowledge items to a shareable playbook JSON file.
+
+    Use this to pass the validated playbook to another trading-brain instance
+    (e.g. a friend on the same course). Personal observations and trades are
+    never exported. By default only approved/active items are included;
+    include_historical=True exports every status (draft/deprecated included).
+
+    path: optional output file. Default: <data dir>/exports/playbook-<utc>.json
+    """
+    try:
+        wanted = _normalize_csv(statuses, KNOWLEDGE_STATUSES, {"approved", "active"})
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    if include_historical:
+        wanted = set(KNOWLEDGE_STATUSES)
+
+    with _conn() as conn:
+        rows = conn.execute("SELECT * FROM knowledge_items ORDER BY id").fetchall()
+    items = [knowledge_to_dict(r) for r in rows if r["status"] in wanted]
+
+    if path.strip():
+        export_path = Path(path.strip())
+    else:
+        exports_dir = Path(Config.from_env().db_path).parent / "exports"
+        stamp = utc_now().replace("-", "").replace(":", "")[:13]
+        export_path = exports_dir / f"playbook-{stamp}.json"
+    export_path.parent.mkdir(parents=True, exist_ok=True)
+
+    payload = {
+        "format": PLAYBOOK_EXPORT_FORMAT,
+        "exported_at": utc_now(),
+        "statuses": sorted(wanted),
+        "count": len(items),
+        "items": items,
+    }
+    export_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8"
+    )
+    return {
+        "ok": True,
+        "path": str(export_path),
+        "count": len(items),
+        "statuses": sorted(wanted),
+        "titles": [f"K#{i['id']} {i['title']}" for i in items],
+    }
+
+
+@mcp.tool()
+def import_playbook(path: str, dry_run: bool = False) -> dict:
+    """Import knowledge items from a playbook JSON export into this journal.
+
+    Items whose (topic, title) already exist locally are skipped, so importing
+    a newer export from the same source only adds what is new. superseded_by
+    references are remapped to local ids when both ends are present. Imported
+    items keep their status/confidence and gain imported_from metadata.
+
+    dry_run=True previews what would be imported/skipped without writing.
+    """
+    file_path = Path(path.strip())
+    if not file_path.exists():
+        return {"ok": False, "error": f"file not found: {file_path}"}
+    try:
+        payload = json.loads(file_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        return {"ok": False, "error": f"invalid playbook JSON: {exc}"}
+    if payload.get("format") != PLAYBOOK_EXPORT_FORMAT:
+        return {"ok": False, "error": f"unsupported format: {payload.get('format')!r}"}
+
+    items = sorted(payload.get("items") or [], key=lambda x: x.get("id") or 0)
+    imported: list[dict] = []
+    skipped: list[dict] = []
+    errors: list[dict] = []
+    id_map: dict[int, int] = {}  # export id -> local id
+    now = utc_now()
+
+    with _conn() as conn:
+        to_insert: list[dict] = []
+        for item in items:
+            orig_id = item.get("id")
+            title = (item.get("title") or "").strip()
+            topic = (item.get("topic") or "").strip()
+            if not title or not topic:
+                errors.append({"id": orig_id, "error": "missing topic/title"})
+                continue
+            if (item.get("kind") or "") not in KNOWLEDGE_KINDS:
+                errors.append({"id": orig_id, "error": f"invalid kind: {item.get('kind')!r}"})
+                continue
+            if (item.get("status") or "") not in KNOWLEDGE_STATUSES:
+                errors.append({"id": orig_id, "error": f"invalid status: {item.get('status')!r}"})
+                continue
+            if not (item.get("content") or "").strip():
+                errors.append({"id": orig_id, "error": "missing content"})
+                continue
+            existing = conn.execute(
+                "SELECT id FROM knowledge_items WHERE topic = ? AND title = ?",
+                (topic, title),
+            ).fetchone()
+            if existing is not None:
+                if orig_id is not None:
+                    id_map[orig_id] = existing["id"]
+                skipped.append({"id": orig_id, "local_id": existing["id"], "title": title})
+                continue
+            to_insert.append(item)
+
+        for item in to_insert:
+            orig_id = item.get("id")
+            if dry_run:
+                imported.append({"id": orig_id, "title": item["title"], "status": item.get("status")})
+                continue
+            confidence = item.get("confidence")
+            if confidence not in KNOWLEDGE_CONFIDENCES:
+                confidence = "uncertain"
+            metadata = dict(item.get("metadata") or {})
+            metadata["imported_from"] = {
+                "file": file_path.name,
+                "original_id": orig_id,
+                "exported_at": payload.get("exported_at"),
+                "imported_at": now,
+            }
+            cur = conn.execute(
+                """
+                INSERT INTO knowledge_items (
+                    created_at, updated_at, kind, topic, title, content, status,
+                    confidence, source, source_ref, valid_from, valid_until,
+                    superseded_by, tags_json, metadata_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    item.get("created_at") or now,
+                    now,
+                    item["kind"],
+                    item["topic"].strip(),
+                    item["title"].strip(),
+                    item["content"],
+                    item["status"],
+                    confidence,
+                    _clean_text(item.get("source")),
+                    _clean_text(item.get("source_ref")),
+                    _clean_text(item.get("valid_from")),
+                    _clean_text(item.get("valid_until")),
+                    None,  # remapped in the second pass below
+                    encode_json(normalize_tags(item.get("tags"))),
+                    encode_json(metadata),
+                ),
+            )
+            if orig_id is not None:
+                id_map[orig_id] = cur.lastrowid
+            imported.append({
+                "id": orig_id,
+                "local_id": cur.lastrowid,
+                "title": item["title"],
+                "status": item.get("status"),
+            })
+
+        if not dry_run:
+            for item in to_insert:
+                orig_sup = item.get("superseded_by")
+                orig_id = item.get("id")
+                if orig_sup is None or orig_id not in id_map:
+                    continue
+                local_sup = id_map.get(orig_sup)
+                if local_sup is not None:
+                    conn.execute(
+                        "UPDATE knowledge_items SET superseded_by = ? WHERE id = ?",
+                        (local_sup, id_map[orig_id]),
+                    )
+
+    return {
+        "ok": True,
+        "dry_run": dry_run,
+        "imported_count": len(imported),
+        "skipped_count": len(skipped),
+        "error_count": len(errors),
+        "imported": imported,
+        "skipped": skipped,
+        "errors": errors,
     }
 
 
