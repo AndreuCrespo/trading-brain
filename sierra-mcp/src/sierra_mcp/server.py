@@ -41,8 +41,12 @@ INTERVAL_SECONDS = {
     "1d": 86400,
 }
 
-SESSION_LOOKBACK_RECORDS = 1_000_000
-FEATURES_LOOKBACK_RECORDS = 2_000_000
+# Lookbacks are time-based (dense symbols like MNQ blow past any fixed record
+# count within a couple of sessions); the record caps only bound memory.
+SESSION_LOOKBACK_HOURS = 30
+SESSION_LOOKBACK_MAX_RECORDS = 2_000_000
+FEATURES_LOOKBACK_HOURS = 96
+FEATURES_LOOKBACK_MAX_RECORDS = 6_000_000
 FUTURES_ROOTS = {
     "ES": "E-mini S&P 500",
     "MES": "Micro E-mini S&P 500",
@@ -757,9 +761,10 @@ async def get_futures_context(
     resolved_symbol, scid_path = resolved
 
     records = await asyncio.to_thread(
-        scid_reader.read_tail_records,
+        scid_reader.read_records_since,
         scid_path,
-        SESSION_LOOKBACK_RECORDS,
+        time.time() - SESSION_LOOKBACK_HOURS * 3600,
+        SESSION_LOOKBACK_MAX_RECORDS,
     )
     if not records:
         return {"ok": False, "error": f"no records in file: {scid_path}"}
@@ -876,9 +881,10 @@ async def get_market_features(
     resolved_symbol, scid_path = resolved
 
     records = await asyncio.to_thread(
-        scid_reader.read_tail_records,
+        scid_reader.read_records_since,
         scid_path,
-        FEATURES_LOOKBACK_RECORDS,
+        time.time() - FEATURES_LOOKBACK_HOURS * 3600,
+        FEATURES_LOOKBACK_MAX_RECORDS,
     )
     if not records:
         return {"ok": False, "error": f"no records in file: {scid_path}"}
@@ -905,7 +911,15 @@ async def get_market_features(
     if tick_age > 30:
         warnings.append(f"last tick is stale by {tick_age:.1f}s")
     if not previous:
-        warnings.append("previous Globex session unavailable in loaded SCID tail")
+        warnings.append("previous Globex session unavailable in loaded SCID window")
+    coverage_start = records[0].unix_time
+    week_anchor = indicator_engine._week_start(last_record.unix_time)
+    month_anchor = indicator_engine._month_start(last_record.unix_time)
+    if coverage_start > min(week_anchor, month_anchor) + 60:
+        warnings.append(
+            "anchored weekly/monthly VWAPs are partial: loaded window starts at "
+            f"{datetime_from_unix(coverage_start)}"
+        )
 
     return {
         "ok": True,

@@ -28,7 +28,7 @@ def sc_datetime_to_unix(sc_dt: int) -> float:
     return (SC_EPOCH + timedelta(microseconds=sc_dt) - datetime(1970, 1, 1, tzinfo=timezone.utc)).total_seconds()
 
 
-@dataclass
+@dataclass(slots=True)
 class TickRecord:
     sc_datetime: int
     unix_time: float
@@ -60,6 +60,55 @@ def read_tail_records(path: str, max_records: int) -> list[TickRecord]:
     for i in range(n_to_read):
         chunk = blob[i * RECORD_SIZE : (i + 1) * RECORD_SIZE]
         sc_dt, o, h, l, c, nt, vol, bvol, avol = RECORD_STRUCT.unpack(chunk)
+        records.append(TickRecord(
+            sc_datetime=sc_dt,
+            unix_time=sc_datetime_to_unix(sc_dt),
+            open=o, high=h, low=l, close=c,
+            num_trades=nt, volume=vol,
+            bid_volume=bvol, ask_volume=avol,
+        ))
+    return records
+
+
+def read_records_since(path: str, since_unix: float, max_records: int = 0) -> list[TickRecord]:
+    """Read records with unix_time >= since_unix, in chronological order.
+
+    Records are fixed-size and time-ordered, so the start offset is found with
+    a binary search on the SCDateTime field. Dense symbols (e.g. MNQ tick data)
+    can exceed a fixed record-count tail within a couple of sessions; a
+    time-based window keeps the previous-session lookback correct regardless of
+    tick density. If the window holds more than max_records (when nonzero),
+    only the most recent max_records are returned.
+    """
+    target_scdt = int((since_unix - SC_EPOCH.timestamp()) * 1_000_000)
+    with open(path, "rb") as f:
+        f.seek(0, 2)
+        data_bytes = f.tell() - HEADER_SIZE
+        if data_bytes < RECORD_SIZE:
+            return []
+        n_in_file = data_bytes // RECORD_SIZE
+
+        lo, hi = 0, n_in_file  # first index with sc_dt >= target
+        while lo < hi:
+            mid = (lo + hi) // 2
+            f.seek(HEADER_SIZE + mid * RECORD_SIZE)
+            (sc_dt,) = struct.unpack("<q", f.read(8))
+            if sc_dt < target_scdt:
+                lo = mid + 1
+            else:
+                hi = mid
+
+        start = lo
+        if max_records and n_in_file - start > max_records:
+            start = n_in_file - max_records
+        if start >= n_in_file:
+            return []
+        f.seek(HEADER_SIZE + start * RECORD_SIZE)
+        blob = f.read((n_in_file - start) * RECORD_SIZE)
+
+    records: list[TickRecord] = []
+    for chunk in RECORD_STRUCT.iter_unpack(blob):
+        sc_dt, o, h, l, c, nt, vol, bvol, avol = chunk
         records.append(TickRecord(
             sc_datetime=sc_dt,
             unix_time=sc_datetime_to_unix(sc_dt),
