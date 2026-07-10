@@ -186,7 +186,18 @@ Known Sierra state:
   from Sierra visual studies. Use it to calibrate session template, tick size
   and value-area percent before trusting levels for decisions. The engine's
   session model is approximate (Globex 22:00 UTC, RTH 13:30 UTC, 60-minute IB).
-- `get_quote` and DTC historical bars have returned `Request is not authorized` on the current Sierra/Denali setup. Do not assume DTC market data is fixed.
+- `get_quote` and DTC historical bars have returned `Request is not authorized`
+  / `Market data request not allowed` on both the delayed and the real-time
+  Trading Evaluator services. Do not assume DTC market data is fixed; SCID is
+  the data path.
+- As of 2026-07-10 the selected service is `Trading Evaluator` (real-time CME
+  data via the account's Denali/exchange fees). The `- Delayed` variant of the
+  service serves the same symbols with ~10-minute delayed ticks; the freshness
+  guard and `likely_delayed_feed` flag handle both automatically.
+- MES/MNQ charts in Sierra are configured as Continuous Futures Contract with
+  Date Rule Rollover, so the active-contract `.scid` files stay updated across
+  quarterly rolls without manual chart changes (as long as Sierra is running
+  and the chartbook is saved).
 - `get_positions` uses `CURRENT_POSITIONS_REQUEST` (DTC type 305) and responds
   correctly with an empty list when there are no Sim positions.
 - `place_sim_market_order` is guarded: Sim accounts only, MES/MNQ symbols for
