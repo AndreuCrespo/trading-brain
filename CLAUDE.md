@@ -85,15 +85,18 @@ D:\inversion
 |-- CLAUDE.md
 |-- AGENTS.md
 |-- sierra-mcp
+|   |-- CLAUDE.md
 |   |-- pyproject.toml
 |   |-- uv.lock
 |   |-- .env
+|   |-- safety.json
 |   `-- src\sierra_mcp
 |       |-- server.py
 |       |-- config.py
 |       |-- dtc_client.py
 |       |-- dtc_messages.py
-|       `-- scid_reader.py
+|       |-- scid_reader.py
+|       `-- indicator_engine.py
 |-- discord-mcp
 |   |-- pyproject.toml
 |   |-- uv.lock
@@ -123,6 +126,7 @@ All `.env` files are local secrets/config and are gitignored.
 `sierra-mcp` exposes these tools:
 
 - `ping_sierra`
+- `get_active_futures_contract`
 - `get_quote`
 - `get_recent_bars`
 - `get_recent_bars_scid`
@@ -130,6 +134,8 @@ All `.env` files are local secrets/config and are gitignored.
 - `get_scid_status`
 - `get_futures_context`
 - `get_market_features`
+- `get_indicator_levels`
+- `compare_indicator_levels`
 - `list_trade_accounts`
 - `get_account_balance`
 - `get_positions`
@@ -144,11 +150,24 @@ Key files:
 - `dtc_client.py`: async TCP client for Sierra DTC JSON messages terminated by null bytes.
 - `dtc_messages.py`: DTC message IDs.
 - `scid_reader.py`: local `.scid` tick-file reader and bar aggregator.
+- `indicator_engine.py`: structured indicator calculations over SCID ticks
+  (VWAP, value area/POC, delta, IBH/IBL, ONH/ONL, pHOD/pLOD, ADR, weekly and
+  monthly anchored VWAPs with deviation bands).
+
+`sierra-mcp` also has its own `CLAUDE.md` with DTC client patterns and the
+session-model assumptions of the indicator engine.
 
 Known Sierra state:
 
 - `ping_sierra` works when Sierra Chart DTC is enabled.
+- `get_active_futures_contract` resolves MES/MNQ/ES/NQ to the current quarterly
+  contract (8-calendar-day pre-expiry roll window by default). Call it first in
+  any futures workflow where the user names a root symbol without a month; do
+  not hard-code contract months in workflows or docs.
 - `get_recent_bars_scid` is validated and is the reliable market-data path today.
+- SCID tools auto-resolve symbol aliases (`MESM26` vs `MESM26-CME`) and pick the
+  `.scid` file with the freshest last tick. Always check `resolved_symbol`,
+  `source` and `latest.tick_age_seconds` before treating output as current.
 - `get_latest_tick_scid` and `get_scid_status` provide near-real-time last tick
   and file freshness from Sierra's local `.scid` file.
 - `get_futures_context` is the main ES/NQ context pack. It uses `.scid`, filters
@@ -159,18 +178,31 @@ Known Sierra state:
   or wants the agent to reason from indicators instead of chart screenshots.
   It calculates current and previous approximate Globex VWAP, POC, VAH/VAL,
   high-volume nodes, delta and price-location tags from raw `.scid` ticks.
+- `get_indicator_levels` is the compact indicator pack over
+  `get_market_features`: current/previous VWAP, POC, VAH/VAL plus playbook
+  levels (ONH/ONL, IBH/IBL, pHOD/pLOD, ADR, wVWAP/mVWAP and distances). Prefer
+  it for premarket/postmarket level work.
+- `compare_indicator_levels` diffs MCP-calculated levels against values read
+  from Sierra visual studies. Use it to calibrate session template, tick size
+  and value-area percent before trusting levels for decisions. The engine's
+  session model is approximate (Globex 22:00 UTC, RTH 13:30 UTC, 60-minute IB).
 - `get_quote` and DTC historical bars have returned `Request is not authorized` on the current Sierra/Denali setup. Do not assume DTC market data is fixed.
 - `get_positions` uses `CURRENT_POSITIONS_REQUEST` (DTC type 305) and responds
   correctly with an empty list when there are no Sim positions.
-- `place_sim_market_order` is guarded: Sim accounts only, MES/MNQ current test
-  contract symbols only (`MESM26-CME` / `MNQM26-CME` for SC Data style,
-  `MESM26` / `MNQM26` for Trading Evaluator style), max quantity 1, rationale
-  required, `confirm=True` required, and the account must be listed in local
-  `sierra-mcp/safety.json`.
+- `place_sim_market_order` is guarded: Sim accounts only, MES/MNQ symbols for
+  the active quarterly contract only (as resolved by
+  `get_active_futures_contract`, in both SC Data style `MESU26-CME` and
+  Trading Evaluator style `MESU26`), max quantity 1, rationale required,
+  `confirm=True` required, and the account must be listed in local
+  `sierra-mcp/safety.json`. It also refuses to open new positions when the
+  local SCID data for the symbol is stale or missing
+  (`SIERRA_ORDER_MAX_TICK_AGE_SECONDS`, default 900s to tolerate the delayed
+  evaluator feed).
 - `close_sim_position` is the preferred semantic tool for natural-language
   requests like "close MES"; it reads the current position first, previews the
   opposite market order, and still requires explicit confirmation.
-  It is for Sierra simulated/evaluator accounts only.
+  It is for Sierra simulated/evaluator accounts only. Stale SCID data adds a
+  warning to the preview but never blocks a close (closing reduces risk).
 - `get_account_balance` can return empty on Sim accounts; Sierra may not
   maintain account balances for Trade Simulation Mode accounts.
 
@@ -253,11 +285,14 @@ Discord `fetch_image` for image attachments and save extracted rules as draft
 `knowledge_items` with source metadata. Human-reviewed trading rules should be
 marked `approved` or `active`; stale/deprecated/draft items are context only.
 
-Premarket/postmarket workflows should prefer Sierra `get_market_features` over
-`get_futures_context` when reasoning about VWAP, POC, current/previous value,
-VAH/VAL, pVAH/pVAL or delta. Then call `search_knowledge` and use only
-`approved`/`active` playbook items for decisions. Draft/stale/deprecated items
-may be shown for review context but should not drive trade decisions.
+Premarket/postmarket workflows should start with `get_active_futures_contract`
+to resolve the contract, then prefer Sierra `get_indicator_levels` (or the full
+`get_market_features`) over `get_futures_context` when reasoning about VWAP,
+POC, current/previous value, VAH/VAL, pVAH/pVAL, ON/IB levels or delta. Then
+call `search_knowledge` and use only `approved`/`active` playbook items for
+decisions. Draft/stale/deprecated items may be shown for review context but
+should not drive trade decisions. If the SCID feed is delayed or stale, say so
+explicitly in the analysis instead of treating it as live.
 
 Key files:
 
