@@ -195,9 +195,11 @@ Known Sierra state:
   Trading Evaluator style `MESU26`), max quantity 1, rationale required,
   `confirm=True` required, and the account must be listed in local
   `sierra-mcp/safety.json`. It also refuses to open new positions when the
-  local SCID data for the symbol is stale or missing
-  (`SIERRA_ORDER_MAX_TICK_AGE_SECONDS`, default 900s to tolerate the delayed
-  evaluator feed).
+  local SCID data for the symbol is stale or missing: freshness is
+  `min(tick age, file write age)` vs `SIERRA_ORDER_MAX_TICK_AGE_SECONDS`
+  (default 900s), because the delayed evaluator feed keeps ticks ~10 minutes
+  behind even when healthy. The `likely_delayed_feed` flag in the preview
+  means analysis should be framed as delayed, not live.
 - `close_sim_position` is the preferred semantic tool for natural-language
   requests like "close MES"; it reads the current position first, previews the
   opposite market order, and still requires explicit confirmation.

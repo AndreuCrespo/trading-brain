@@ -241,18 +241,27 @@ def _scid_freshness(config: Config, symbol: str) -> dict:
             "resolved_symbol": resolved_symbol,
             "error": f"{resolved_symbol}.scid exists but has no tick records",
         }
-    age = max(0.0, time.time() - record.unix_time)
+    now = time.time()
+    tick_age = max(0.0, now - record.unix_time)
+    file_age = max(0.0, now - scid_reader.file_status(path)["modified_unix"])
+    # tick_age includes the feed delay (10 min on Trading Evaluator - Delayed)
+    # plus Sierra's batched disk writes, so a healthy delayed feed can show
+    # 10-17 minutes. file_age tells us when Sierra last wrote anything, so the
+    # freshest of the two is when we last learned something new about the market.
+    age = min(tick_age, file_age)
     return {
         "ok": True,
         "resolved_symbol": resolved_symbol,
         "last_tick_time": datetime_from_unix(record.unix_time),
         "last_price": record.close,
-        "tick_age_seconds": round(age, 1),
+        "tick_age_seconds": round(tick_age, 1),
+        "file_age_seconds": round(file_age, 1),
+        "freshness_age_seconds": round(age, 1),
         "max_tick_age_seconds": max_age,
         "stale": age > max_age,
-        # Anything beyond a couple of minutes usually means a delayed feed;
-        # workflows should say so instead of presenting levels as live.
-        "likely_delayed_feed": 120 < age <= max_age,
+        # A tick noticeably older than the file write usually means a delayed
+        # feed; workflows should say so instead of presenting levels as live.
+        "likely_delayed_feed": not (tick_age > max_age) and tick_age - file_age > 120,
     }
 
 

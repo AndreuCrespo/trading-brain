@@ -46,10 +46,15 @@ Order symbols are restricted to the active quarterly MES/MNQ contracts resolved
 by `get_active_futures_contract`; do not hard-code old contract months in
 workflows.
 `place_sim_market_order` additionally refuses to open new positions when the
-local SCID data for the symbol is stale or missing (last tick older than
-`SIERRA_ORDER_MAX_TICK_AGE_SECONDS`, default 900s so the ~10-minute delayed
-evaluator feed still passes). `close_sim_position` only warns on stale data —
-closing reduces risk and must never be blocked by the freshness guard.
+local SCID data for the symbol is stale or missing. Freshness is
+`min(tick age, file modification age)` compared against
+`SIERRA_ORDER_MAX_TICK_AGE_SECONDS` (default 900s): on the Trading Evaluator
+delayed feed the ticks themselves are ~10 minutes behind and Sierra flushes to
+disk in batches, so tick age alone would false-positive on a healthy feed. A
+tick noticeably older than the file write sets `likely_delayed_feed` — say so
+in analysis instead of presenting levels as live. `close_sim_position` only
+warns on stale data — closing reduces risk and must never be blocked by the
+freshness guard.
 
 ## Architecture
 
