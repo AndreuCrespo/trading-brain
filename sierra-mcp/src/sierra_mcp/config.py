@@ -50,6 +50,10 @@ class Config:
     heartbeat_interval: int
     data_path: str
     allowed_sim_accounts: tuple[str, ...]
+    # Max age of the last local SCID tick before order tools refuse to open new
+    # sim positions. Default 900s tolerates the ~10-minute Trading Evaluator
+    # delayed feed while still blocking closed-market/dead-feed submissions.
+    order_max_tick_age_seconds: int
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -63,4 +67,7 @@ class Config:
             heartbeat_interval=int(os.getenv("SIERRA_DTC_HEARTBEAT", "10")),
             data_path=os.getenv("SIERRA_DATA_PATH", r"D:\SierraChart\Data"),
             allowed_sim_accounts=_load_allowed_sim_accounts(),
+            order_max_tick_age_seconds=int(
+                os.getenv("SIERRA_ORDER_MAX_TICK_AGE_SECONDS", "900")
+            ),
         )

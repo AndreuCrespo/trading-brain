@@ -217,6 +217,45 @@ def _resolve_scid_path(data_path: str, symbol: str) -> tuple[str, str] | None:
     return best[0], best[1]
 
 
+def _scid_freshness(config: Config, symbol: str) -> dict:
+    """Report how fresh the local SCID data is for a symbol.
+
+    Order tools use this as a market-context guard: no SCID file or a last tick
+    older than order_max_tick_age_seconds means we have no current view of the
+    market (Sierra closed, feed dead, market closed, or expired contract file).
+    """
+    max_age = config.order_max_tick_age_seconds
+    resolved = _resolve_scid_path(config.data_path, symbol)
+    if resolved is None:
+        return {
+            "ok": False,
+            "stale": True,
+            "error": f"no local .scid file found for {symbol} under {config.data_path}",
+        }
+    resolved_symbol, path = resolved
+    record = scid_reader.read_last_record(path)
+    if record is None:
+        return {
+            "ok": False,
+            "stale": True,
+            "resolved_symbol": resolved_symbol,
+            "error": f"{resolved_symbol}.scid exists but has no tick records",
+        }
+    age = max(0.0, time.time() - record.unix_time)
+    return {
+        "ok": True,
+        "resolved_symbol": resolved_symbol,
+        "last_tick_time": datetime_from_unix(record.unix_time),
+        "last_price": record.close,
+        "tick_age_seconds": round(age, 1),
+        "max_tick_age_seconds": max_age,
+        "stale": age > max_age,
+        # Anything beyond a couple of minutes usually means a delayed feed;
+        # workflows should say so instead of presenting levels as live.
+        "likely_delayed_feed": 120 < age <= max_age,
+    }
+
+
 def _validate_sim_order(
     symbol: str,
     side: str,
@@ -1403,10 +1442,12 @@ async def place_sim_market_order(
 
     Safety rules:
     - trade_account must start with Sim
-    - symbol must be in the small allowlist (MES/MNQ current test contracts)
+    - symbol must be an active quarterly MES/MNQ contract
     - quantity is capped at 1
     - confirm must be true
     - rationale is required
+    - local SCID data for the symbol must be fresh (order_max_tick_age_seconds);
+      stale or missing data blocks new positions
 
     If confirm is false, returns an order preview and does not send anything.
     """
@@ -1428,6 +1469,22 @@ async def place_sim_market_order(
     if not rationale:
         return {"ok": False, "error": "rationale is required"}
 
+    market_data = _scid_freshness(config, symbol)
+    if market_data.get("stale"):
+        return {
+            "ok": False,
+            "error": (
+                "market data guard: local SCID data for this symbol is stale or "
+                "missing; refusing to open a new sim position without a current "
+                "view of the market"
+            ),
+            "market_data": market_data,
+            "hint": (
+                "check get_scid_status; if Sierra Chart is running and the feed "
+                "is just slower, raise SIERRA_ORDER_MAX_TICK_AGE_SECONDS in .env"
+            ),
+        }
+
     preview = {
         "symbol": symbol,
         "side": side_norm,
@@ -1435,11 +1492,13 @@ async def place_sim_market_order(
         "trade_account": trade_account,
         "order_type": "market",
         "rationale": rationale,
+        "market_data": market_data,
         "safety": {
             "sim_account_only": True,
             "allowed_accounts": list(config.allowed_sim_accounts),
             "allowed_symbols": sorted(_active_sim_symbols()),
             "max_quantity": SIM_MAX_QUANTITY,
+            "max_tick_age_seconds": config.order_max_tick_age_seconds,
         },
     }
     if not confirm:
@@ -1529,6 +1588,8 @@ async def close_sim_position(
 
     close_side = "sell" if position_qty > 0 else "buy"
     order_symbol = str(position.get("symbol") or symbol).strip().upper()
+    # Closing reduces risk, so stale data warns but never blocks the close.
+    market_data = _scid_freshness(config, order_symbol)
     preview = {
         "action": "close_sim_position",
         "symbol": order_symbol,
@@ -1539,6 +1600,7 @@ async def close_sim_position(
         "order_type": "market",
         "rationale": rationale,
         "position": position,
+        "market_data": market_data,
         "safety": {
             "sim_account_only": True,
             "allowed_accounts": list(config.allowed_sim_accounts),
@@ -1546,6 +1608,11 @@ async def close_sim_position(
             "max_quantity": SIM_MAX_QUANTITY,
         },
     }
+    if market_data.get("stale"):
+        preview["warning"] = (
+            "local SCID data is stale or missing; the close is still allowed "
+            "but the fill price may differ from the last known price"
+        )
     if not confirm:
         return {
             "ok": False,

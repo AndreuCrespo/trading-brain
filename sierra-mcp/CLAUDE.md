@@ -45,6 +45,11 @@ Order tools also require local `safety.json` with `allowed_sim_accounts`; use `s
 Order symbols are restricted to the active quarterly MES/MNQ contracts resolved
 by `get_active_futures_contract`; do not hard-code old contract months in
 workflows.
+`place_sim_market_order` additionally refuses to open new positions when the
+local SCID data for the symbol is stale or missing (last tick older than
+`SIERRA_ORDER_MAX_TICK_AGE_SECONDS`, default 900s so the ~10-minute delayed
+evaluator feed still passes). `close_sim_position` only warns on stale data —
+closing reduces risk and must never be blocked by the freshness guard.
 
 ## Architecture
 
