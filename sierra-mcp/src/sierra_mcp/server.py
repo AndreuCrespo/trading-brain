@@ -1009,6 +1009,7 @@ async def get_indicator_levels(
             "low": current.get("low"),
             "volume": current.get("volume"),
             "delta": current.get("delta"),
+            "dva_state": current.get("dva_state"),
         },
         "previous": {
             "vwap": previous.get("vwap"),

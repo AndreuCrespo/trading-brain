@@ -331,6 +331,111 @@ def derived_levels(
     return out
 
 
+DVA_SLOPE_WINDOW_MINUTES = 180
+DVA_MIN_SPAN_MINUTES = 60
+DVA_NORM_SLOPE_THRESHOLD = 0.25
+
+
+def dva_state(
+    session_records: list[scid_reader.TickRecord],
+    adr: float | None,
+    latest_price: float,
+    window_minutes: int = DVA_SLOPE_WINDOW_MINUTES,
+) -> dict:
+    """Classify the session DVA as imbalanced or rotational.
+
+    donAdri's mechanical definition (2026-07-13): the DVA is imbalanced when
+    the 1st-deviation VWAP bands ("bandas grises") have slope. The session
+    VWAP is cumulative, so its raw points-per-hour slope decays as volume
+    accumulates; the usable signal is the VWAP displacement over a trailing
+    window NORMALIZED by the current 1st deviation (sigma), plus requiring
+    BOTH bands to move in the same direction (early-session sigma expansion
+    lifts the upper band while the DVA is still rotational).
+
+    Validated against 5 hand-labelled MES sessions (2026-07-13): threshold
+    0.25 separates clear cases; borderline sessions need visual calibration
+    with donAdri — show him the session, record the norm_slope he calls
+    imbalanced, adjust DVA_NORM_SLOPE_THRESHOLD.
+    """
+    if not session_records:
+        return {"state": "insufficient_data", "reason": "no session records"}
+
+    cum_v = cum_pv = cum_p2v = 0.0
+    series: list[tuple[float, float, float]] = []  # (ts, vwap, sigma)
+    current_minute: int | None = None
+
+    def snapshot(ts: float) -> None:
+        if cum_v <= 0:
+            return
+        vwap = cum_pv / cum_v
+        var = max(0.0, cum_p2v / cum_v - vwap * vwap)
+        series.append((ts, vwap, var ** 0.5))
+
+    for r in session_records:
+        minute = int(r.unix_time // 60) * 60
+        if current_minute is None:
+            current_minute = minute
+        elif minute != current_minute:
+            snapshot(current_minute + 60)
+            current_minute = minute
+        v = float(r.volume)
+        p = float(r.close)
+        cum_v += v
+        cum_pv += p * v
+        cum_p2v += p * p * v
+    snapshot(session_records[-1].unix_time)
+
+    if len(series) < 2:
+        return {"state": "insufficient_data", "reason": "session too short"}
+
+    end_ts, vwap_now, sigma_now = series[-1]
+    target_ts = end_ts - window_minutes * 60
+    past = series[0]
+    for row in series:
+        if row[0] <= target_ts:
+            past = row
+        else:
+            break
+    span_minutes = (end_ts - past[0]) / 60
+    if span_minutes < DVA_MIN_SPAN_MINUTES:
+        return {
+            "state": "insufficient_data",
+            "reason": f"only {span_minutes:.1f} minutes of session data",
+        }
+
+    vwap_delta = vwap_now - past[1]
+    sigma_delta = sigma_now - past[2]
+    upper_band_delta = vwap_delta + sigma_delta
+    lower_band_delta = vwap_delta - sigma_delta
+    norm_slope = (vwap_delta / sigma_now) if sigma_now > 0 else 0.0
+    bands_aligned_up = min(upper_band_delta, lower_band_delta) > 0
+    bands_aligned_down = max(upper_band_delta, lower_band_delta) < 0
+
+    if bands_aligned_up and norm_slope >= DVA_NORM_SLOPE_THRESHOLD:
+        state = "imbalanced_up"
+    elif bands_aligned_down and norm_slope <= -DVA_NORM_SLOPE_THRESHOLD:
+        state = "imbalanced_down"
+    else:
+        state = "rotational"
+
+    return {
+        "state": state,
+        "window_minutes_used": round(span_minutes, 1),
+        "vwap_delta_points": round(vwap_delta, 3),
+        "sigma_now": round(sigma_now, 3),
+        "norm_slope": round(norm_slope, 3),
+        "upper_band_delta_points": round(upper_band_delta, 3),
+        "lower_band_delta_points": round(lower_band_delta, 3),
+        "bands_aligned": "up" if bands_aligned_up else ("down" if bands_aligned_down else "mixed"),
+        "threshold_norm_slope": DVA_NORM_SLOPE_THRESHOLD,
+        "definition": (
+            "imbalanced when both 1st-deviation VWAP bands move together and "
+            "|vwap displacement over window| >= threshold * sigma (donAdri); "
+            "threshold provisional, calibrate visually against his chart"
+        ),
+    }
+
+
 def build_market_features(
     records: list[scid_reader.TickRecord],
     tick_size: float,
@@ -368,6 +473,10 @@ def build_market_features(
         "distance_to_previous_poc": distance(latest_price, previous_profile.get("poc")),
     }
 
+    derived = derived_levels(records, current_start, previous_records)
+    adr_value = (derived.get("adr") or {}).get("value")
+    current["dva_state"] = dva_state(current_records, adr_value, latest_price)
+
     read_parts: list[str] = []
     current_loc = relationships["current_value_location"]
     previous_loc = relationships["previous_value_location"]
@@ -379,6 +488,9 @@ def build_market_features(
         read_parts.append("above_current_vwap" if latest_price > current_vwap else "below_current_vwap")
     if current.get("delta") is not None:
         read_parts.append("positive_delta" if current["delta"] > 0 else "negative_delta")
+    dva = current["dva_state"].get("state")
+    if dva and dva != "insufficient_data":
+        read_parts.append(f"dva_{dva}")
 
     return {
         "current_start": current_start,
@@ -389,5 +501,5 @@ def build_market_features(
         "previous_session": previous,
         "relationships": relationships,
         "read_tags": read_parts,
-        "derived_levels": derived_levels(records, current_start, previous_records),
+        "derived_levels": derived,
     }
