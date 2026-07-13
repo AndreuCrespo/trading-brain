@@ -352,10 +352,14 @@ def dva_state(
     BOTH bands to move in the same direction (early-session sigma expansion
     lifts the upper band while the DVA is still rotational).
 
-    Validated against 5 hand-labelled MES sessions (2026-07-13): threshold
-    0.25 separates clear cases; borderline sessions need visual calibration
-    with donAdri — show him the session, record the norm_slope he calls
-    imbalanced, adjust DVA_NORM_SLOPE_THRESHOLD.
+    Calibrated against donAdri's own labels (2026-07-13, 3/3 match): Mon
+    13-jul rotational (norm +0.163), Fri 10-jul imbalanced_up (+0.314), Tue
+    7-jul rotational (-0.226) — on the last one the classifier contradicted
+    our hand label and the author sided with the classifier. His reference
+    magnitudes: ~+0.4 sigma/3h = imbalanced; ~-0.27 sigma/1.5h with price
+    crossing sides = rotational. Keep collecting daily labels; a future
+    refinement is price side-stability vs the bands (riding one side =
+    imbalance, crossing through = rotational).
     """
     if not session_records:
         return {"state": "insufficient_data", "reason": "no session records"}
