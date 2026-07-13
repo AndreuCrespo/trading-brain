@@ -148,11 +148,13 @@ def walk(t, model):
         hi, lo = rth[k][2], rth[k][3]
         if side == "long":
             if lo <= stop:
-                r += (2 if half_done else 1) * ((stop - entry) / STOP_PTS)
+                r += (0.5 if half_done else 1.0) * ((stop - entry) / STOP_PTS)
                 return r
-            if model == "C" and not half_done and hi >= tp1:
-                r += 0.5 * 2; half_done = True; stop = entry  # BE
-            if model == "C" and half_done and hi >= tp2:
+            if model in ("C", "D") and not half_done and hi >= tp1:
+                r += 0.5 * 2; half_done = True
+                if model == "C":
+                    stop = entry  # BE only in C; D keeps the original stop (Adri)
+            if model in ("C", "D") and half_done and hi >= tp2:
                 return r + 0.5 * 3
             if model == "B" and hi >= tp1:
                 return 2.0
@@ -160,11 +162,13 @@ def walk(t, model):
                 return (tgt - entry) / STOP_PTS
         else:
             if hi >= stop:
-                r += (2 if half_done else 1) * ((entry - stop) / STOP_PTS)
+                r += (0.5 if half_done else 1.0) * ((entry - stop) / STOP_PTS)
                 return r
-            if model == "C" and not half_done and lo <= tp1:
-                r += 0.5 * 2; half_done = True; stop = entry
-            if model == "C" and half_done and lo <= tp2:
+            if model in ("C", "D") and not half_done and lo <= tp1:
+                r += 0.5 * 2; half_done = True
+                if model == "C":
+                    stop = entry
+            if model in ("C", "D") and half_done and lo <= tp2:
                 return r + 0.5 * 3
             if model == "B" and lo <= tp1:
                 return 2.0
@@ -173,24 +177,36 @@ def walk(t, model):
     # timeout: mark to last close
     last = rth[-1][4]
     move = (last - entry) / STOP_PTS if side == "long" else (entry - last) / STOP_PTS
-    if model == "C" and half_done:
-        return 0.5 * 2 + 0.5 * max(0.0, move)  # first half banked, runner at BE-or-better
+    if half_done:
+        if model == "C":
+            return r + 0.5 * max(0.0, move)  # runner floored at BE
+        return r + 0.5 * move  # D: runner marked to close, no floor
     return move
 
 
+def mfe_r(t):
+    side, entry, rth, j = t["side"], t["level"], t["rth"], t["j"]
+    best = 0.0
+    for k in range(j + 1, len(rth)):
+        move = (rth[k][2] - entry) if side == "long" else (entry - rth[k][3])
+        best = max(best, move)
+    return best / STOP_PTS
+
+
+MODELS = ("A", "B", "C", "D")
 print(f"acceptance-filtered trades (A={ACCEPT_MIN}): {len(trades)}\n")
-print(f"{'date':<10}{'side':<6}{'A:next-lvl':>11}{'B:2R':>7}{'C:scaled':>10}")
-tot = {"A": 0.0, "B": 0.0, "C": 0.0}
-wins = {"A": 0, "B": 0, "C": 0}
+print(f"{'date':<10}{'side':<6}{'MFE(R)':>7}{'A:next-lvl':>11}{'B:2R':>7}{'C:scaled+BE':>12}{'D:scaled-noBE':>14}")
+tot = {m: 0.0 for m in MODELS}
+wins = {m: 0 for m in MODELS}
 for t in trades:
-    rs_ = {m: walk(t, m) for m in ("A", "B", "C")}
-    for m in rs_:
+    rs_ = {m: walk(t, m) for m in MODELS}
+    for m in MODELS:
         tot[m] += rs_[m]
         if rs_[m] > 0:
             wins[m] += 1
-    print(f"{t['date']:<10}{t['side']:<6}{rs_['A']:>+11.2f}{rs_['B']:>+7.2f}{rs_['C']:>+10.2f}")
+    print(f"{t['date']:<10}{t['side']:<6}{mfe_r(t):>7.2f}{rs_['A']:>+11.2f}{rs_['B']:>+7.2f}{rs_['C']:>+12.2f}{rs_['D']:>+14.2f}")
 n = len(trades)
-print(f"\n{'TOTAL R':<16}{tot['A']:>+11.2f}{tot['B']:>+7.2f}{tot['C']:>+10.2f}")
-print(f"{'win rate':<16}{wins['A']/n:>11.0%}{wins['B']/n:>7.0%}{wins['C']/n:>10.0%}")
-print(f"{'expectancy R':<16}{tot['A']/n:>+11.2f}{tot['B']/n:>+7.2f}{tot['C']/n:>+10.2f}")
-print("\n(R = múltiplos de riesgo; stop 1R = 6 pts. Modelo C = mitad a 2R + stop a BE + runner a 3R.)")
+print(f"\n{'TOTAL R':<23}{tot['A']:>+11.2f}{tot['B']:>+7.2f}{tot['C']:>+12.2f}{tot['D']:>+14.2f}")
+print(f"{'win rate':<23}{wins['A']/n:>11.0%}{wins['B']/n:>7.0%}{wins['C']/n:>12.0%}{wins['D']/n:>14.0%}")
+print(f"{'expectancy R':<23}{tot['A']/n:>+11.2f}{tot['B']/n:>+7.2f}{tot['C']/n:>+12.2f}{tot['D']/n:>+14.2f}")
+print("\n(R = múltiplos de riesgo; stop 1R = 6 pts. C = mitad a 2R + BE + runner 3R. D = igual pero SIN mover el stop a BE — variante de Adri.)")
