@@ -1,0 +1,72 @@
+{
+  "timestamp": "2026-07-14T06:52:21",
+  "symbol": "ESU26_FUT_CME",
+  "price": 7552.50,
+  "volume": 2292.00,
+  "relative_volume": 0.92,
+  "dva_eth": {
+    "fsvwap": 7554.29,
+    "condicion": "DENTRO_DESV1",
+    "precio_vs_fsvwap": "DEBAJO",
+    "desv1_arriba": 7558.59,
+    "desv1_abajo": 7550.00,
+    "desv2_arriba": 7562.88,
+    "desv2_abajo": 7545.70,
+    "desv3_arriba": 7571.47,
+    "desv3_abajo": 7537.12
+  },
+  "dva_rth": {
+    "vwap": 0.00,
+    "condicion": "SIN_DATOS",
+    "precio_vs_rthvwap": "SIN_DATOS",
+    "desv1_arriba": 0.00,
+    "desv1_abajo": 0.00,
+    "desv2_arriba": 0.00,
+    "desv2_abajo": 0.00,
+    "desv3_arriba": 0.00,
+    "desv3_abajo": 0.00
+  },
+  "pva": {
+    "vah": 7593.00,
+    "val": 7553.75,
+    "poc": 7563.50,
+    "precio_vs_pva": "DEBAJO_PVA"
+  },
+  "va_actual_rth": {
+    "vah": 7557.00,
+    "val": 7563.25,
+    "poc": 23.00,
+    "precio_vs_va": "NO_FIABLE"
+  },
+  "ib": {
+    "high": 0.00,
+    "low": 0.00,
+    "estado": "SIN_DATOS",
+    "rango": 0.00
+  },
+  "adr": {
+    "high": 7621.35,
+    "low": 7485.40,
+    "rango": 135.95,
+    "pct_completado": 32.18
+  },
+  "delta": {
+    "open": 1742.00,
+    "high": 1805.00,
+    "low": 1635.00,
+    "close": 1648.00,
+    "direccion": "BAJISTA"
+  },
+  "niveles": {
+    "wvwap": 7578.28,
+    "precio_vs_wvwap": "DEBAJO",
+    "mvwap": 7555.57,
+    "precio_vs_mvwap": "DEBAJO",
+    "onh": 7575.25,
+    "onl": 7531.50,
+    "prev_hod": 7610.50,
+    "prev_lod": 7551.00,
+    "prev_close": 7563.06,
+    "day_open": 7595.09
+  }
+}
