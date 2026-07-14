@@ -99,19 +99,28 @@ SCSFExport scsf_MCPDataExport(SCStudyInterfaceRef sc)
     double fsvwap    = Get(sc.Input[1].GetInt(), 0);
     double eth_1up   = Get(sc.Input[1].GetInt(), 1);
     double eth_1dn   = Get(sc.Input[1].GetInt(), 2);
-    double eth_2up   = Get(sc.Input[5].GetInt(), 0);  // DVA2ETH ref
-    double eth_2dn   = Get(sc.Input[5].GetInt(), 1);
-    double eth_3up   = Get(sc.Input[6].GetInt(), 0);  // DVA3ETH ref
-    double eth_3dn   = Get(sc.Input[6].GetInt(), 1);
+    // Los Study Subgraphs Reference exponen PARES POR LADO, no por nivel:
+    // ID DVA2ETH (Input 5) = par INFERIOR (SG0=-2ª desv, SG1=-3ª desv)
+    // ID DVA3ETH (Input 6) = par SUPERIOR (SG0=+2ª desv, SG1=+3ª desv)
+    // Validado en vivo 2026-07-14 contra el chart de trigger (ES).
+    double eth_2up   = Get(sc.Input[6].GetInt(), 0);  // +2ª (par superior SG0)
+    double eth_2dn   = Get(sc.Input[5].GetInt(), 0);  // -2ª (par inferior SG0)
+    double eth_3up   = Get(sc.Input[6].GetInt(), 1);  // +3ª (par superior SG1)
+    double eth_3dn   = Get(sc.Input[5].GetInt(), 1);  // -3ª (par inferior SG1)
 
     // --- RTH VWAP + DVA RTH (ID:23) ---
     double rthvwap   = Get(sc.Input[2].GetInt(), 0);
     double rth_1up   = Get(sc.Input[2].GetInt(), 1);
     double rth_1dn   = Get(sc.Input[2].GetInt(), 2);
-    double rth_2up   = Get(sc.Input[3].GetInt(), 0);  // DVARTH 2da
-    double rth_2dn   = Get(sc.Input[3].GetInt(), 1);
-    double rth_3up   = Get(sc.Input[4].GetInt(), 0);  // DVARTH 3ra
-    double rth_3dn   = Get(sc.Input[4].GetInt(), 1);
+    // Mismo patrón que en ETH — los dos DVARTH son pares POR LADO:
+    // ID:26 (Input 3) = par INFERIOR (SG0=-2ª, SG1=-3ª)
+    // ID:14 (Input 4) = par SUPERIOR (SG0=+2ª, SG1=+3ª)
+    // Confirmado con los valores del sample del 2026-07-02 (vwap 7549.59:
+    // ID:26 → 7524/7498 debajo, ID:14 → 7575/7600 encima).
+    double rth_2up   = Get(sc.Input[4].GetInt(), 0);  // +2ª (par superior SG0)
+    double rth_2dn   = Get(sc.Input[3].GetInt(), 0);  // -2ª (par inferior SG0)
+    double rth_3up   = Get(sc.Input[4].GetInt(), 1);  // +3ª (par superior SG1)
+    double rth_3dn   = Get(sc.Input[3].GetInt(), 1);  // -3ª (par inferior SG1)
 
     // --- pVA (ID:5): orden Sierra Volume Value Area Lines = 0=POC, 1=VAH, 2=VAL ---
     double ppoc = Get(sc.Input[7].GetInt(), 0);
