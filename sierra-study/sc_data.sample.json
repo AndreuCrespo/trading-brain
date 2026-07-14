@@ -1,0 +1,72 @@
+{
+  "timestamp": "2026-07-13T12:48:19",
+  "symbol": "ESU26_FUT_CME",
+  "price": 7568.25,
+  "volume": 1193.00,
+  "relative_volume": 0.48,
+  "dva_eth": {
+    "fsvwap": 7589.40,
+    "condicion": "IMBALANCEADO",
+    "precio_vs_fsvwap": "DEBAJO",
+    "desv1_arriba": 7595.32,
+    "desv1_abajo": 7583.48,
+    "desv2_arriba": 7577.55,
+    "desv2_abajo": 7565.71,
+    "desv3_arriba": 7601.24,
+    "desv3_abajo": 7613.08
+  },
+  "dva_rth": {
+    "vwap": 7588.22,
+    "condicion": "IMBALANCEADO",
+    "precio_vs_rthvwap": "DEBAJO",
+    "desv1_arriba": 7594.40,
+    "desv1_abajo": 7582.04,
+    "desv2_arriba": 7575.87,
+    "desv2_abajo": 7563.51,
+    "desv3_arriba": 7600.57,
+    "desv3_abajo": 7612.93
+  },
+  "pva": {
+    "vah": 7626.00,
+    "val": 7596.00,
+    "poc": 7623.50,
+    "precio_vs_pva": "DEBAJO_PVA"
+  },
+  "va_actual_rth": {
+    "vah": 7593.00,
+    "val": 7606.25,
+    "poc": 23.00,
+    "precio_vs_va": "DEBAJO_VA"
+  },
+  "ib": {
+    "high": 7610.50,
+    "low": 7573.50,
+    "estado": "ROTO_ABAJO",
+    "rango": 37.00
+  },
+  "adr": {
+    "high": 7651.79,
+    "low": 7523.46,
+    "rango": 128.33,
+    "pct_completado": 2.65
+  },
+  "delta": {
+    "open": -3874.00,
+    "high": -3850.00,
+    "low": -4052.00,
+    "close": -3999.00,
+    "direccion": "BAJISTA"
+  },
+  "niveles": {
+    "wvwap": 7589.40,
+    "precio_vs_wvwap": "DEBAJO",
+    "mvwap": 7555.32,
+    "precio_vs_mvwap": "ENCIMA",
+    "onh": 7616.85,
+    "onl": 7566.50,
+    "prev_hod": 7591.24,
+    "prev_lod": 7627.25,
+    "prev_close": 7552.75,
+    "day_open": 7621.38
+  }
+}
