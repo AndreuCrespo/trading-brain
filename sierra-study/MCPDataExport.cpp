@@ -11,6 +11,8 @@
 #include <fstream>
 #include <sstream>
 #include <iomanip>
+#include <locale>
+#include <string>
 
 SCDLLName("MCPDataExport")
 
@@ -50,12 +52,30 @@ SCSFExport scsf_MCPDataExport(SCStudyInterfaceRef sc)
         sc.Input[15].Name = "ID: ONH-ONL";                       sc.Input[15].SetInt(12);
         sc.Input[16].Name = "ID: Collisions (puntos)";           sc.Input[16].SetInt(22);
 
+        // Mínimo de segundos entre escrituras del JSON (0 = cada tick)
+        sc.Input[17].Name = "Throttle escritura (segundos)";     sc.Input[17].SetInt(1);
+
         return;
     }
 
     // Solo procesa en la última barra (tick más reciente)
     if (sc.Index != sc.ArraySize - 1)
         return;
+
+    // Throttle: no reescribir el fichero más de una vez por N segundos.
+    // Escribir en cada tick castiga el hilo del chart y multiplica la ventana
+    // de lectura parcial para cualquier consumidor externo del JSON.
+    {
+        int throttle_sec = sc.Input[17].GetInt();
+        if (throttle_sec > 0)
+        {
+            double now_days  = sc.CurrentSystemDateTime.GetAsDouble();
+            double last_days = sc.GetPersistentDouble(1);
+            if (last_days > 0 && (now_days - last_days) * 86400.0 < (double)throttle_sec)
+                return;
+            sc.SetPersistentDouble(1, now_days);
+        }
+    }
 
     int CN = sc.ChartNumber;
 
@@ -117,11 +137,14 @@ SCSFExport scsf_MCPDataExport(SCStudyInterfaceRef sc)
     double delta_low   = Get(sc.Input[10].GetInt(), 2);
     double delta_close = Get(sc.Input[10].GetInt(), 3);
 
-    // --- Daily OHLC (ID:9): 0=pHOD, 1=pLOD, 2=pClose, 3=Open ---
-    double prev_hod   = Get(sc.Input[12].GetInt(), 0);
-    double prev_lod   = Get(sc.Input[12].GetInt(), 1);
-    double prev_close = Get(sc.Input[12].GetInt(), 2);
-    double day_open   = Get(sc.Input[12].GetInt(), 3);
+    // --- Daily OHLC (ID:9): 0=Open(hoy), 1=High(prev), 2=Low(prev), 3=Close(prev) ---
+    // CORREGIDO: el mapeo anterior (0=pHOD, 1=pLOD, 2=pClose, 3=Open) producía
+    // prev_hod < prev_lod en el sample real. Los valores del sample encajan con
+    // el orden estándar Open/High/Low/Close del estudio Daily OHLC.
+    double day_open   = Get(sc.Input[12].GetInt(), 0);
+    double prev_hod   = Get(sc.Input[12].GetInt(), 1);
+    double prev_lod   = Get(sc.Input[12].GetInt(), 2);
+    double prev_close = Get(sc.Input[12].GetInt(), 3);
 
     // --- wVWAP (ID:13), mVWAP (ID:24) ---
     double wvwap = Get(sc.Input[13].GetInt(), 0);
@@ -138,58 +161,101 @@ SCSFExport scsf_MCPDataExport(SCStudyInterfaceRef sc)
     double low    = (double)sc.Low[last];
     double volume = (double)sc.Volume[last];
 
-    // Volumen de las últimas 10 barras para volumen relativo
+    // Volumen relativo: últimas 10 barras CERRADAS (la última está en formación
+    // y compararla con barras completas infravalora sistemáticamente el RVOL;
+    // en charts de barras de volumen este campo mide "fracción de barra
+    // completada", no RVOL — ver README).
     double vol_sum = 0.0;
     int    vol_cnt = 0;
-    for (int i = last - 9; i <= last - 1; i++)
+    for (int i = last - 10; i <= last - 1; i++)
     {
         if (i >= 0) { vol_sum += sc.Volume[i]; vol_cnt++; }
     }
-    double avg_vol  = (vol_cnt > 0) ? (vol_sum / vol_cnt) : 1.0;
-    double rel_vol  = (avg_vol > 0) ? (volume / avg_vol) : 1.0;
+    double avg_vol  = (vol_cnt > 0) ? (vol_sum / vol_cnt) : 0.0;
+    double rel_vol  = (avg_vol > 0) ? (volume / avg_vol) : 0.0;
 
-    // ADR completado %
-    double adr_range   = (adr_high > adr_low) ? (adr_high - adr_low) : 1.0;
-    double sess_range  = high - low;  // simplificado — rango de sesión
-    double adr_pct     = (sess_range / adr_range) * 100.0;
+    // Rango real de la SESIÓN actual (no de la última barra): recorre hacia
+    // atrás las barras del mismo trading day acumulando high/low.
+    double sess_high = high;
+    double sess_low  = low;
+    {
+        int trading_day = sc.GetTradingDayDate(sc.BaseDateTimeIn[last]);
+        for (int i = last - 1; i >= 0; i--)
+        {
+            if (sc.GetTradingDayDate(sc.BaseDateTimeIn[i]) != trading_day)
+                break;
+            if (sc.High[i] > sess_high) sess_high = (double)sc.High[i];
+            if (sc.Low[i]  < sess_low)  sess_low  = (double)sc.Low[i];
+        }
+    }
+
+    // ADR completado % — sobre el rango de sesión real. Si el estudio ADR no
+    // da bandas válidas, se exporta 0 en vez de un porcentaje inventado.
+    double adr_range = (adr_high > adr_low) ? (adr_high - adr_low) : 0.0;
+    double sess_range = sess_high - sess_low;
+    double adr_pct    = (adr_range > 0.0) ? (sess_range / adr_range) * 100.0 : 0.0;
 
     // ----------------------------------------------------------------
     // CLASIFICACIONES (lógica del playbook)
     // ----------------------------------------------------------------
 
-    // Condición DVA ETH
-    const char* dva_eth_cond = "ROTACIONAL";
-    if (price > eth_1up || price < eth_1dn) dva_eth_cond = "IMBALANCEADO";
+    // GUARDA: un estudio ausente/no calculado devuelve 0.0 en Get(). Sin esta
+    // comprobación, en premarket (IB y DVA RTH a 0) las clasificaciones
+    // afirmaban "ROTO_ARRIBA"/"IMBALANCEADO" contra niveles inexistentes.
+    // Con datos inválidos se exporta "SIN_DATOS" en lugar de una etiqueta falsa.
+    auto Valid = [](double v) { return v > 0.0; };
 
-    // Condición DVA RTH
-    const char* dva_rth_cond = "ROTACIONAL";
-    if (price > rth_1up || price < rth_1dn) dva_rth_cond = "IMBALANCEADO";
+    // Condición DVA (posición instantánea del precio vs 1ª desviación).
+    // OJO: esto NO es el criterio calibrado de imbalance del playbook
+    // (pendiente sostenida + persistencia fuera de la 1ª desv — ver README);
+    // es solo dónde está el precio AHORA respecto a las bandas.
+    const char* dva_eth_cond = "SIN_DATOS";
+    if (Valid(eth_1up) && Valid(eth_1dn))
+        dva_eth_cond = (price > eth_1up || price < eth_1dn) ? "FUERA_DESV1" : "DENTRO_DESV1";
 
-    // Localización precio vs FSVWAP
-    const char* vs_fsvwap  = (price > fsvwap)  ? "ENCIMA" : "DEBAJO";
-    const char* vs_rthvwap = (price > rthvwap) ? "ENCIMA" : "DEBAJO";
-    const char* vs_wvwap   = (price > wvwap)   ? "ENCIMA" : "DEBAJO";
-    const char* vs_mvwap   = (price > mvwap)   ? "ENCIMA" : "DEBAJO";
+    const char* dva_rth_cond = "SIN_DATOS";
+    if (Valid(rth_1up) && Valid(rth_1dn))
+        dva_rth_cond = (price > rth_1up || price < rth_1dn) ? "FUERA_DESV1" : "DENTRO_DESV1";
 
-    // Estado IB
-    const char* ib_status = "DENTRO";
-    if (price > ibh) ib_status = "ROTO_ARRIBA";
-    else if (price < ibl) ib_status = "ROTO_ABAJO";
+    // Localización precio vs VWAPs
+    const char* vs_fsvwap  = Valid(fsvwap)  ? ((price > fsvwap)  ? "ENCIMA" : "DEBAJO") : "SIN_DATOS";
+    const char* vs_rthvwap = Valid(rthvwap) ? ((price > rthvwap) ? "ENCIMA" : "DEBAJO") : "SIN_DATOS";
+    const char* vs_wvwap   = Valid(wvwap)   ? ((price > wvwap)   ? "ENCIMA" : "DEBAJO") : "SIN_DATOS";
+    const char* vs_mvwap   = Valid(mvwap)   ? ((price > mvwap)   ? "ENCIMA" : "DEBAJO") : "SIN_DATOS";
+
+    // Estado IB (solo con IB formado y coherente)
+    const char* ib_status = "SIN_DATOS";
+    if (Valid(ibh) && Valid(ibl) && ibh > ibl)
+    {
+        ib_status = "DENTRO";
+        if (price > ibh) ib_status = "ROTO_ARRIBA";
+        else if (price < ibl) ib_status = "ROTO_ABAJO";
+    }
 
     // Estado delta (barra actual)
     const char* delta_dir = (delta_close >= delta_open) ? "ALCISTA" : "BAJISTA";
     bool delta_neutral = (delta_close - delta_open) == 0.0;
     if (delta_neutral) delta_dir = "PLANO";
 
-    // Precio vs pVA
-    const char* vs_pva = "DENTRO_PVA";
-    if (price > pvah)      vs_pva = "ENCIMA_PVA";
-    else if (price < pval) vs_pva = "DEBAJO_PVA";
+    // Precio vs pVA (exige VAH > VAL coherentes)
+    const char* vs_pva = "SIN_DATOS";
+    if (Valid(pvah) && Valid(pval) && pvah > pval)
+    {
+        vs_pva = "DENTRO_PVA";
+        if (price > pvah)      vs_pva = "ENCIMA_PVA";
+        else if (price < pval) vs_pva = "DEBAJO_PVA";
+    }
 
-    // Precio vs VA actual RTH
-    const char* vs_curva = "DENTRO_VA";
-    if (price > cur_vah)      vs_curva = "ENCIMA_VA";
-    else if (price < cur_val) vs_curva = "DEBAJO_VA";
+    // Precio vs VA actual RTH — el estudio de origen está documentado como no
+    // fiable (POC basura, VAH/VAL a veces invertidos): si llega incoherente,
+    // NO se emite una etiqueta con aspecto limpio.
+    const char* vs_curva = "NO_FIABLE";
+    if (Valid(cur_vah) && Valid(cur_val) && cur_vah > cur_val)
+    {
+        vs_curva = "DENTRO_VA";
+        if (price > cur_vah)      vs_curva = "ENCIMA_VA";
+        else if (price < cur_val) vs_curva = "DEBAJO_VA";
+    }
 
     // Timestamp
     SCDateTime dt = sc.BaseDateTimeIn[last];
@@ -202,6 +268,9 @@ SCSFExport scsf_MCPDataExport(SCStudyInterfaceRef sc)
     // CONSTRUIR JSON
     // ----------------------------------------------------------------
     std::ostringstream j;
+    // Locale clásico: si el proceso tuviera un locale global con coma decimal
+    // (Windows en español), los números saldrían como 7568,25 = JSON inválido.
+    j.imbue(std::locale::classic());
     j << std::fixed << std::setprecision(2);
 
     j << "{\n"
@@ -286,12 +355,28 @@ SCSFExport scsf_MCPDataExport(SCStudyInterfaceRef sc)
       << "}\n";
 
     // ----------------------------------------------------------------
-    // ESCRIBIR ARCHIVO
+    // ESCRIBIR ARCHIVO — de forma atómica.
+    // Antes se abría el destino truncándolo y se escribía in situ: un lector
+    // externo que hiciera polling podía leer un JSON vacío o cortado. Ahora se
+    // escribe a un .tmp y se renombra con MOVEFILE_REPLACE_EXISTING, que en el
+    // mismo volumen es atómico: el lector siempre ve un JSON completo.
     // ----------------------------------------------------------------
-    std::ofstream f(sc.Input[0].GetString());
+    std::string out_path = sc.Input[0].GetString();
+    std::string tmp_path = out_path + ".tmp";
+
+    std::ofstream f(tmp_path.c_str(), std::ios::binary | std::ios::trunc);
     if (f.is_open())
     {
         f << j.str();
         f.close();
+        if (!MoveFileExA(tmp_path.c_str(), out_path.c_str(),
+                         MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+        {
+            sc.AddMessageToLog("MCPDataExport: fallo al renombrar el JSON temporal", 1);
+        }
+    }
+    else
+    {
+        sc.AddMessageToLog("MCPDataExport: no se pudo abrir el fichero de salida", 1);
     }
 }
