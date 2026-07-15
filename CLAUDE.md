@@ -135,6 +135,7 @@ All `.env` files are local secrets/config and are gitignored.
 - `get_futures_context`
 - `get_market_features`
 - `get_indicator_levels`
+- `get_ha_trigger`
 - `compare_indicator_levels`
 - `list_trade_accounts`
 - `get_account_balance`
@@ -182,6 +183,18 @@ Known Sierra state:
   `get_market_features`: current/previous VWAP, POC, VAH/VAL plus playbook
   levels (ONH/ONL, IBH/IBL, pHOD/pLOD, ADR, wVWAP/mVWAP and distances). Prefer
   it for premarket/postmarket level work.
+- `get_indicator_levels` also returns `current_rth`/`previous_rth` blocks:
+  RTH-only value-area profiles (13:30-20:00 UTC), which are the donAdri-system
+  pVAs (his profiles are RTH; the full-Globex VAL skews low — calibration
+  2026-07-13/15). `current_rth` is empty before the RTH open — that is correct,
+  not a bug. Exact match with his chart still depends on his Volume Value Area
+  Lines study settings (VA%, tick grouping, volume-vs-TPO), pending read-out
+  from the chartbook study settings.
+- `get_ha_trigger` evaluates the donAdri entry trigger (giro de Heikin Ashi)
+  from SCID ticks aggregated into constant-volume bars (default 500/bar for
+  micros; his ES trigger chart uses 3000) or time bars via `interval`. A giro
+  only counts on the last CLOSED bar; the forming bar is an early revocable
+  signal. The giro is a trigger, not a setup: checklist first (K#9/K#10/K#13/K#14).
 - `compare_indicator_levels` diffs MCP-calculated levels against values read
   from Sierra visual studies. Use it to calibrate session template, tick size
   and value-area percent before trusting levels for decisions. The engine's

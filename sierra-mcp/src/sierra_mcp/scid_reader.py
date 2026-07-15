@@ -203,6 +203,55 @@ def aggregate_to_bars(records: list[TickRecord], interval_seconds: int) -> list[
     return ordered
 
 
+def aggregate_to_volume_bars(records: list[TickRecord], volume_per_bar: int) -> list[dict]:
+    """Aggregate tick records into constant-volume bars (donAdri's trigger chart).
+
+    A bar closes as soon as its accumulated volume reaches volume_per_bar. The
+    last bar is usually still forming; callers must not treat it as closed
+    (see the "forming" flag).
+    """
+    if volume_per_bar <= 0 or not records:
+        return []
+
+    bars: list[dict] = []
+    bar: dict | None = None
+    for r in records:
+        price = r.close
+        if bar is None:
+            bar = {
+                "time": r.unix_time,
+                "open": price,
+                "high": price,
+                "low": price,
+                "close": price,
+                "volume": 0,
+                "num_trades": 0,
+                "bid_volume": 0,
+                "ask_volume": 0,
+            }
+        else:
+            if price > bar["high"]:
+                bar["high"] = price
+            if price < bar["low"]:
+                bar["low"] = price
+            bar["close"] = price
+        bar["volume"] += r.volume
+        bar["num_trades"] += r.num_trades
+        bar["bid_volume"] += r.bid_volume
+        bar["ask_volume"] += r.ask_volume
+        if bar["volume"] >= volume_per_bar:
+            bar["forming"] = False
+            bars.append(bar)
+            bar = None
+    if bar is not None:
+        bar["forming"] = True
+        bars.append(bar)
+
+    for b in bars:
+        b["time"] = datetime.fromtimestamp(b["time"], tz=timezone.utc).isoformat()
+    return bars
+
+
 def aggregate_session_stats(records: list[TickRecord]) -> dict:
     """Aggregate records into simple session-level stats."""
     if not records:

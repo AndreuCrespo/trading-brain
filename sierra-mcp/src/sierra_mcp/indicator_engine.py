@@ -331,6 +331,85 @@ def derived_levels(
     return out
 
 
+RTH_DURATION_SECONDS = int(6.5 * 3600)  # CME equity RTH 13:30-20:00 UTC
+
+
+def rth_records_for_session(
+    records: list[scid_reader.TickRecord],
+    session_start: float,
+) -> list[scid_reader.TickRecord]:
+    """Slice a session's records down to the RTH window.
+
+    donAdri's TPO/value-area system builds profiles on the RTH session only
+    (PPT §3); the full-Globex profile skews the VAL downward with overnight
+    volume (calibration 2026-07-13: 10-point pVAL gap vs his chart).
+    """
+    rth_open = _rth_open_for_session(session_start)
+    return _records_between(records, rth_open, rth_open + RTH_DURATION_SECONDS)
+
+
+def heikin_ashi_bars(bars: list[dict]) -> list[dict]:
+    """Transform OHLC bars into Heikin Ashi bars with color.
+
+    donAdri's entry trigger is the "giro de HA" on the trigger chart
+    (volume bars): the HA candle color flipping against the previous one.
+    """
+    ha: list[dict] = []
+    for b in bars:
+        o = float(b["open"])
+        h = float(b["high"])
+        low = float(b["low"])
+        c = float(b["close"])
+        ha_close = (o + h + low + c) / 4.0
+        ha_open = (o + c) / 2.0 if not ha else (ha[-1]["ha_open"] + ha[-1]["ha_close"]) / 2.0
+        ha.append({
+            "time": b.get("time"),
+            "ha_open": round(ha_open, 4),
+            "ha_high": round(max(h, ha_open, ha_close), 4),
+            "ha_low": round(min(low, ha_open, ha_close), 4),
+            "ha_close": round(ha_close, 4),
+            "color": "verde" if ha_close >= ha_open else "roja",
+            "volume": b.get("volume"),
+            "delta": int(b.get("ask_volume", 0)) - int(b.get("bid_volume", 0)),
+            "forming": bool(b.get("forming", False)),
+        })
+    return ha
+
+
+def ha_trigger_state(ha_bars: list[dict]) -> dict:
+    """Evaluate the giro-de-HA state on the most recent CLOSED bar.
+
+    The last bar is usually forming; a giro only counts when a closed bar
+    flips color versus the closed bar before it. The forming bar's color is
+    reported separately as an early (revocable) signal.
+    """
+    closed = [b for b in ha_bars if not b["forming"]]
+    if len(closed) < 2:
+        return {"giro": False, "reason": "insufficient closed bars"}
+    last, prev = closed[-1], closed[-2]
+    giro = last["color"] != prev["color"]
+    out = {
+        "giro": giro,
+        "direction": ("alcista" if last["color"] == "verde" else "bajista") if giro else None,
+        "last_closed_color": last["color"],
+        "prev_closed_color": prev["color"],
+        "last_closed_time": last["time"],
+        "streak": 0,
+    }
+    streak = 1
+    for b in reversed(closed[:-1]):
+        if b["color"] == last["color"]:
+            streak += 1
+        else:
+            break
+    out["streak"] = streak
+    forming = next((b for b in reversed(ha_bars) if b["forming"]), None)
+    if forming is not None:
+        out["forming_bar_color"] = forming["color"]
+        out["forming_bar_flips"] = forming["color"] != last["color"]
+    return out
+
+
 DVA_SLOPE_WINDOW_MINUTES = 180
 DVA_MIN_SPAN_MINUTES = 60
 DVA_NORM_SLOPE_THRESHOLD = 0.25
@@ -481,6 +560,14 @@ def build_market_features(
     adr_value = (derived.get("adr") or {}).get("value")
     current["dva_state"] = dva_state(current_records, adr_value, latest_price)
 
+    # RTH-only profiles — the donAdri-system value areas (see rth_records_for_session).
+    current_rth = profile_context(
+        rth_records_for_session(current_records, current_start), tick_size, value_area_percent
+    )
+    previous_rth = profile_context(
+        rth_records_for_session(previous_records, previous_start), tick_size, value_area_percent
+    ) if previous_start is not None else {}
+
     read_parts: list[str] = []
     current_loc = relationships["current_value_location"]
     previous_loc = relationships["previous_value_location"]
@@ -503,6 +590,8 @@ def build_market_features(
         "previous_records": previous_records,
         "current_session": current,
         "previous_session": previous,
+        "current_session_rth": current_rth,
+        "previous_session_rth": previous_rth,
         "relationships": relationships,
         "read_tags": read_parts,
         "derived_levels": derived,

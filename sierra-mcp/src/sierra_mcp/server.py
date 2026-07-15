@@ -946,6 +946,8 @@ async def get_market_features(
         },
         "current_session": current,
         "previous_session": previous,
+        "current_session_rth": features["current_session_rth"],
+        "previous_session_rth": features["previous_session_rth"],
         "relationships": features["relationships"],
         "derived_levels": features["derived_levels"],
         "read": {
@@ -991,7 +993,24 @@ async def get_indicator_levels(
     previous = features.get("previous_session", {})
     current_profile = current.get("volume_profile", {})
     previous_profile = previous.get("volume_profile", {})
+    current_rth = features.get("current_session_rth", {})
+    previous_rth = features.get("previous_session_rth", {})
     derived = features.get("derived_levels", {})
+
+    def _rth_block(session: dict) -> dict:
+        profile = session.get("volume_profile", {}) if session else {}
+        if not session:
+            return {}
+        return {
+            "vwap": session.get("vwap"),
+            "poc": profile.get("poc"),
+            "vah": profile.get("vah"),
+            "val": profile.get("val"),
+            "high": session.get("high"),
+            "low": session.get("low"),
+            "volume": session.get("volume"),
+            "delta": session.get("delta"),
+        }
 
     return {
         "ok": True,
@@ -1021,6 +1040,11 @@ async def get_indicator_levels(
             "volume": previous.get("volume"),
             "delta": previous.get("delta"),
         },
+        # Perfiles RTH-only: los value areas del sistema donAdri (PPT §3).
+        # Los bloques current/previous de arriba son de sesión Globex completa
+        # y su VAL sale desplazado hacia abajo por el volumen overnight.
+        "current_rth": _rth_block(current_rth),
+        "previous_rth": _rth_block(previous_rth),
         "playbook_levels": {
             "overnight": derived.get("overnight"),
             "initial_balance": derived.get("initial_balance"),
@@ -1031,6 +1055,91 @@ async def get_indicator_levels(
         },
         "relationships": features.get("relationships"),
         "read": features.get("read"),
+    }
+
+
+@mcp.tool()
+async def get_ha_trigger(
+    symbol: str,
+    bar_volume: int = 500,
+    interval: str = "",
+    bars_count: int = 12,
+) -> dict:
+    """Evaluate the donAdri entry trigger: giro de Heikin Ashi on the trigger chart.
+
+    Aggregates local SCID ticks into constant-volume bars (default, like the
+    course's trigger chart — donAdri uses 3000-volume on ES; ~300-500 suits
+    MES/MNQ) or time bars if `interval` is given (e.g. "1m", "5m"). Returns the
+    recent HA bars with colors plus the giro state on the last CLOSED bar.
+
+    A giro is only an entry trigger when the setup checklist already holds
+    (shift in condition + acceptance + zone); this tool reports the trigger
+    state, it does not validate the setup.
+    """
+    symbol = symbol.strip().upper()
+    if bars_count < 3:
+        return {"ok": False, "error": "bars_count must be >= 3"}
+    config = Config.from_env()
+    resolved = _resolve_scid_path(config.data_path, symbol)
+    if resolved is None:
+        return {
+            "ok": False,
+            "error": f"file not found for {symbol}",
+            "tried_symbols": sorted(_symbol_aliases(symbol)),
+            "data_path": config.data_path,
+        }
+    resolved_symbol, scid_path = resolved
+
+    records = await asyncio.to_thread(
+        scid_reader.read_records_since,
+        scid_path,
+        time.time() - 48 * 3600,
+        SESSION_LOOKBACK_MAX_RECORDS,
+    )
+    if not records:
+        return {"ok": False, "error": f"no recent records in file: {scid_path}"}
+
+    interval = interval.strip().lower()
+    if interval:
+        if interval not in INTERVAL_SECONDS or INTERVAL_SECONDS[interval] <= 0:
+            return {"ok": False, "error": f"interval must be one of {sorted(k for k, v in INTERVAL_SECONDS.items() if v > 0)}"}
+        bars = scid_reader.aggregate_to_bars(records, INTERVAL_SECONDS[interval])
+        for b in bars:
+            b["forming"] = False
+        if bars:
+            bars[-1]["forming"] = True  # time bucket still open
+        bar_type = f"time:{interval}"
+    else:
+        if bar_volume < 1:
+            return {"ok": False, "error": "bar_volume must be positive"}
+        bars = scid_reader.aggregate_to_volume_bars(records, bar_volume)
+        bar_type = f"volume:{bar_volume}"
+
+    if len(bars) < 3:
+        return {"ok": False, "error": "not enough bars in the loaded window"}
+
+    ha = indicator_engine.heikin_ashi_bars(bars)
+    trigger = indicator_engine.ha_trigger_state(ha)
+
+    last_record = records[-1]
+    now = time.time()
+    return {
+        "ok": True,
+        "symbol": symbol,
+        "resolved_symbol": resolved_symbol,
+        "bar_type": bar_type,
+        "latest": {
+            "price": last_record.close,
+            "time": datetime_from_unix(last_record.unix_time),
+            "tick_age_seconds": round(max(0.0, now - last_record.unix_time), 3),
+        },
+        "trigger": trigger,
+        "ha_bars": ha[-bars_count:],
+        "note": (
+            "giro = cambio de color en la última barra CERRADA; la barra en "
+            "formación es señal temprana revocable. El giro solo es entrada si "
+            "el checklist del setup ya se cumple (K#9/K#10/K#13/K#14)."
+        ),
     }
 
 
