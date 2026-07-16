@@ -413,6 +413,11 @@ def ha_trigger_state(ha_bars: list[dict]) -> dict:
 DVA_SLOPE_WINDOW_MINUTES = 180
 DVA_MIN_SPAN_MINUTES = 60
 DVA_NORM_SLOPE_THRESHOLD = 0.25
+# Persistencia: fracción mínima de la ventana con el precio más allá de la 1ª
+# desviación para declarar imbalance sin pendiente (donAdri: "cabalgando").
+DVA_PERSISTENCE_MIN_FRAC = 0.60
+# Cruce bilateral: fracción mínima a CADA lado del VWAP para forzar rotational.
+DVA_TWO_SIDED_MIN_FRAC = 0.25
 
 
 def dva_state(
@@ -432,19 +437,21 @@ def dva_state(
     lifts the upper band while the DVA is still rotational).
 
     Calibrated against donAdri's own labels (2026-07-13, 3/3 match): Mon
-    13-jul rotational (norm +0.163), Fri 10-jul imbalanced_up (+0.314), Tue
-    7-jul rotational (-0.226) — on the last one the classifier contradicted
-    our hand label and the author sided with the classifier. His reference
-    magnitudes: ~+0.4 sigma/3h = imbalanced; ~-0.27 sigma/1.5h with price
-    crossing sides = rotational. Keep collecting daily labels; a future
-    refinement is price side-stability vs the bands (riding one side =
-    imbalance, crossing through = rotational).
+    13-jul rotational, Fri 10-jul imbalanced_up, Tue 7-jul rotational.
+
+    v2 (2026-07-16): added the second branch of donAdri's dual criterion —
+    PERSISTENCE (price riding beyond the 1st deviation for most of the
+    window) and the two-sided-VWAP-cross rotational override. Motivated by
+    the 15-jul MNQ blind spot (obs #42): a 581-pt trend day kept reading
+    rotational because the selloff inflated sigma and crushed norm_slope,
+    while price rode below the lower band for hours.
     """
     if not session_records:
         return {"state": "insufficient_data", "reason": "no session records"}
 
     cum_v = cum_pv = cum_p2v = 0.0
-    series: list[tuple[float, float, float]] = []  # (ts, vwap, sigma)
+    last_price = float(session_records[0].close)
+    series: list[tuple[float, float, float, float]] = []  # (ts, vwap, sigma, price)
     current_minute: int | None = None
 
     def snapshot(ts: float) -> None:
@@ -452,7 +459,7 @@ def dva_state(
             return
         vwap = cum_pv / cum_v
         var = max(0.0, cum_p2v / cum_v - vwap * vwap)
-        series.append((ts, vwap, var ** 0.5))
+        series.append((ts, vwap, var ** 0.5, last_price))
 
     for r in session_records:
         minute = int(r.unix_time // 60) * 60
@@ -463,6 +470,7 @@ def dva_state(
             current_minute = minute
         v = float(r.volume)
         p = float(r.close)
+        last_price = p
         cum_v += v
         cum_pv += p * v
         cum_p2v += p * p * v
@@ -471,7 +479,7 @@ def dva_state(
     if len(series) < 2:
         return {"state": "insufficient_data", "reason": "session too short"}
 
-    end_ts, vwap_now, sigma_now = series[-1]
+    end_ts, vwap_now, sigma_now, _ = series[-1]
     target_ts = end_ts - window_minutes * 60
     past = series[0]
     for row in series:
@@ -494,15 +502,52 @@ def dva_state(
     bands_aligned_up = min(upper_band_delta, lower_band_delta) > 0
     bands_aligned_down = max(upper_band_delta, lower_band_delta) < 0
 
-    if bands_aligned_up and norm_slope >= DVA_NORM_SLOPE_THRESHOLD:
+    # Rama 2 del criterio donAdri — PERSISTENCIA: qué fracción de la ventana
+    # pasó el precio más allá de la 1ª desviación, y si cruzó el VWAP por los
+    # dos lados. En trend days la sigma se infla con el propio movimiento y
+    # aplasta norm_slope (punto ciego detectado el 15-jul en MNQ, obs #42);
+    # el precio "cabalgando" fuera de la banda es la señal que sobrevive.
+    window_rows = [row for row in series if row[0] > target_ts]
+    n_rows = len(window_rows)
+    above_band = below_band = above_vwap = below_vwap = 0
+    for _, w_vwap, w_sigma, w_price in window_rows:
+        if w_price > w_vwap:
+            above_vwap += 1
+        elif w_price < w_vwap:
+            below_vwap += 1
+        if w_price > w_vwap + w_sigma:
+            above_band += 1
+        elif w_price < w_vwap - w_sigma:
+            below_band += 1
+    frac_above_band = above_band / n_rows if n_rows else 0.0
+    frac_below_band = below_band / n_rows if n_rows else 0.0
+    frac_above_vwap = above_vwap / n_rows if n_rows else 0.0
+    frac_below_vwap = below_vwap / n_rows if n_rows else 0.0
+
+    two_sided = min(frac_above_vwap, frac_below_vwap) >= DVA_TWO_SIDED_MIN_FRAC
+    persistence_up = frac_above_band >= DVA_PERSISTENCE_MIN_FRAC
+    persistence_down = frac_below_band >= DVA_PERSISTENCE_MIN_FRAC
+    slope_up = bands_aligned_up and norm_slope >= DVA_NORM_SLOPE_THRESHOLD
+    slope_down = bands_aligned_down and norm_slope <= -DVA_NORM_SLOPE_THRESHOLD
+
+    # "Si el precio cruza el VWAP por ambos lados, es rotacional aunque haya
+    # deriva" (donAdri) — el cruce bilateral domina sobre la pendiente.
+    if two_sided:
+        state = "rotational"
+        criterion = "two_sided_vwap_cross"
+    elif slope_up or persistence_up:
         state = "imbalanced_up"
-    elif bands_aligned_down and norm_slope <= -DVA_NORM_SLOPE_THRESHOLD:
+        criterion = "slope" if slope_up else "persistence"
+    elif slope_down or persistence_down:
         state = "imbalanced_down"
+        criterion = "slope" if slope_down else "persistence"
     else:
         state = "rotational"
+        criterion = "none"
 
     return {
         "state": state,
+        "criterion": criterion,
         "window_minutes_used": round(span_minutes, 1),
         "vwap_delta_points": round(vwap_delta, 3),
         "sigma_now": round(sigma_now, 3),
@@ -510,11 +555,16 @@ def dva_state(
         "upper_band_delta_points": round(upper_band_delta, 3),
         "lower_band_delta_points": round(lower_band_delta, 3),
         "bands_aligned": "up" if bands_aligned_up else ("down" if bands_aligned_down else "mixed"),
+        "frac_above_band": round(frac_above_band, 3),
+        "frac_below_band": round(frac_below_band, 3),
+        "frac_above_vwap": round(frac_above_vwap, 3),
+        "frac_below_vwap": round(frac_below_vwap, 3),
         "threshold_norm_slope": DVA_NORM_SLOPE_THRESHOLD,
+        "threshold_persistence": DVA_PERSISTENCE_MIN_FRAC,
         "definition": (
-            "imbalanced when both 1st-deviation VWAP bands move together and "
-            "|vwap displacement over window| >= threshold * sigma (donAdri); "
-            "threshold provisional, calibrate visually against his chart"
+            "criterio doble donAdri: pendiente normalizada de las bandas O "
+            "persistencia del precio fuera de la 1ª desviación; cruce del VWAP "
+            "por ambos lados fuerza rotational aunque haya deriva"
         ),
     }
 
