@@ -410,6 +410,158 @@ def ha_trigger_state(ha_bars: list[dict]) -> dict:
     return out
 
 
+def detect_setup(
+    records: list[scid_reader.TickRecord],
+    *,
+    tick_size: float,
+    stop_points: float,
+    zone_points: float,
+    vol_bar: int = 500,
+    min_prior_streak: int = 3,
+    rr_min: float = 2.0,
+    lookback_bars: int = 6,
+    value_area_percent: float = 0.70,
+) -> dict:
+    """Live setup detector — el cerebro compartido de los modos semi/auto.
+
+    Reconstruye el contexto en el instante actual (dva_state + pVA RTH + bandas
+    wVWAP + barras HA) y busca la señal VÁLIDA más reciente en las últimas
+    `lookback_bars` barras de volumen CERRADAS. Aplica el checklist mecánico:
+    filtro K#12 (imbalanced->BPB continuación / rotational->EF-RPB reversión),
+    proximidad a borde del pVA, giro de HA que rompe una racha previa
+    >= min_prior_streak (aceptación anti-chop), y RR >= rr_min al siguiente
+    nivel. Escanear varias barras evita perder el giro cuando se consulta a
+    intervalos (el giro es un evento puntual — obs #58/#59).
+
+    NO evalúa "shift in condition" discrecional: su salida es un CANDIDATO para
+    confirmación humana (modo semi), no una orden.
+
+    ⚠ ESTADO (2026-07-24): WIP — NO reproduce todavía las señales del replay
+    validado (backtests/replay_detector.py). En un test de paridad sobre el
+    15-jul (donde el replay halló un BPB short @pVAL a las 16:31) esta función
+    NO dispara. Falla hacia "sin señal" (conservador: nunca propone de más),
+    pero NO usar para decisiones semi reales hasta reconciliar la paridad
+    barra-a-barra con el replay. Pendiente: comparar las series de barras de
+    volumen/HA de ambos caminos en un mismo instante.
+    """
+    if not records:
+        return {"signal": False, "reason": "no records"}
+    now_price = float(records[-1].close)
+    now_ts = records[-1].unix_time
+    cur_start = globex_equity_session_start(now_ts)
+    prev_start = previous_nonempty_session_start(records, cur_start)
+    if prev_start is None:
+        return {"signal": False, "reason": "no previous session for pVA"}
+    cur_recs = records_for_session(records, cur_start)
+    prev_recs = records_for_session(records, prev_start)
+    prev_rth = rth_records_for_session(prev_recs, prev_start)
+    pva = volume_profile(prev_rth, tick_size, value_area_percent) if prev_rth else {}
+    if not pva:
+        return {"signal": False, "reason": "no previous RTH value area"}
+
+    wk = _anchored_vwap(records, _week_start(now_ts))
+    bands = wk.get("bands") or {}
+    levels = {"pVAH": pva.get("vah"), "pVAL": pva.get("val"), "pPOC": pva.get("poc"),
+              "wVWAP": wk.get("vwap"), "w+1": bands.get("plus_1"), "w-1": bands.get("minus_1"),
+              "w+2": bands.get("plus_2"), "w-2": bands.get("minus_2")}
+    levels = {k: v for k, v in levels.items() if v is not None}
+
+    # Barras de volumen SOLO con ticks RTH (reset en la apertura RTH), igual que
+    # el replay validado — construirlas sobre la sesión Globex completa cambia
+    # los límites de barra y descuadra los giros (paridad, obs #60).
+    rth_open = _rth_open_for_session(cur_start)
+    rth_recs = [r for r in cur_recs if r.unix_time >= rth_open]
+    if len(rth_recs) < 100:
+        return {"signal": False, "reason": "RTH not open yet or too few RTH ticks", "levels": levels}
+    vbars = scid_reader.aggregate_to_volume_bars(rth_recs, vol_bar)
+    ha = heikin_ashi_bars(vbars)
+    closed_idx = [i for i, b in enumerate(ha) if not b["forming"]]
+    if len(closed_idx) < min_prior_streak + 1:
+        return {"signal": False, "reason": "not enough closed bars", "levels": levels}
+
+    def near(lv):
+        return lv is not None and abs(now_price - lv) <= zone_points
+
+    # Escanea de la barra cerrada más reciente hacia atrás (hasta lookback_bars)
+    for i in reversed(closed_idx[-lookback_bars:]):
+        if i == 0 or ha[i]["color"] == ha[i - 1]["color"]:
+            continue  # no es barra de giro
+        prior = 0
+        for j in range(i - 1, -1, -1):
+            if ha[j]["color"] == ha[i - 1]["color"]:
+                prior += 1
+            else:
+                break
+        if prior < min_prior_streak:
+            continue  # aceptación insuficiente (parpadeo de chop)
+        giro_dir = "alcista" if ha[i]["color"] == "verde" else "bajista"
+        bar_price = float(vbars[i]["close"])
+        bar_ts = _bar_close_ts(vbars, i)
+
+        def zone_hit(lv):
+            return lv is not None and abs(bar_price - lv) <= zone_points
+
+        w0 = bar_ts - DVA_SLOPE_WINDOW_MINUTES * 60 - 60
+        dva_slice = [r for r in cur_recs if w0 <= r.unix_time <= bar_ts]
+        if len(dva_slice) < 100:
+            continue
+        state = dva_state(dva_slice, adr=None, latest_price=bar_price).get("state")
+
+        setup = side = zone = None
+        direction = 0
+        if state == "imbalanced_down" and giro_dir == "bajista" and zone_hit(levels.get("pVAL")):
+            setup, side, zone, direction = "BPB", "short", "pVAL", -1
+        elif state == "imbalanced_up" and giro_dir == "alcista" and zone_hit(levels.get("pVAH")):
+            setup, side, zone, direction = "BPB", "long", "pVAH", 1
+        elif state == "rotational":
+            if zone_hit(levels.get("pVAH")) and giro_dir == "bajista":
+                setup, side, zone, direction = "EF/RPB", "short", "pVAH", -1
+            elif zone_hit(levels.get("pVAL")) and giro_dir == "alcista":
+                setup, side, zone, direction = "EF/RPB", "long", "pVAL", 1
+        if setup is None:
+            continue
+
+        cands = [v for v in levels.values() if (v - bar_price) * direction > zone_points]
+        if not cands:
+            continue
+        target = min(cands, key=lambda v: abs(v - bar_price))
+        entry = levels[zone]
+        stop = entry - direction * stop_points
+        rr = (target - entry) * direction / stop_points
+        if rr < rr_min:
+            continue
+
+        bars_ago = closed_idx[-1] - i
+        return {
+            "signal": True,
+            "setup": setup, "side": side, "zone": zone,
+            "dva_state": state, "giro": giro_dir, "prior_streak": prior,
+            "entry": round(entry, 2), "stop": round(stop, 2),
+            "target": round(target, 2), "rr": round(rr, 2),
+            "bar_time": datetime.fromtimestamp(bar_ts, tz=timezone.utc).isoformat(),
+            "bars_ago": bars_ago,
+            "current_price": now_price,
+            "still_near_zone": near(levels.get(zone)),
+            "levels": {k: round(v, 2) for k, v in levels.items()},
+            "checklist": {
+                "dva_filter": state,
+                "zona": f"{zone} (borde pVA)",
+                "aceptacion": f"racha previa {prior} barras (>= {min_prior_streak})",
+                "giro_HA": f"{giro_dir} OK",
+                "rr>=min": True,
+                "shift_in_condition": "NO EVALUADO (discrecional — confirmación humana)",
+            },
+        }
+    return {"signal": False, "reason": "sin giro válido en zona en las últimas barras",
+            "levels": {k: round(v, 2) for k, v in levels.items()}}
+
+
+def _bar_close_ts(vbars: list[dict], i: int) -> float:
+    """Timestamp de cierre de la barra i (apertura de la siguiente, o la propia)."""
+    ref = vbars[i + 1]["time"] if i + 1 < len(vbars) else vbars[i]["time"]
+    return datetime.fromisoformat(ref).timestamp()
+
+
 DVA_SLOPE_WINDOW_MINUTES = 180
 DVA_MIN_SPAN_MINUTES = 60
 DVA_NORM_SLOPE_THRESHOLD = 0.25

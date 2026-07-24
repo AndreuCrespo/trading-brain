@@ -1143,6 +1143,78 @@ async def get_ha_trigger(
     }
 
 
+SETUP_STOP_POINTS = {"MES": 6.0, "MNQ": 30.0}
+SETUP_ZONE_POINTS = {"MES": 3.0, "MNQ": 15.0}
+
+
+@mcp.tool()
+async def get_setup_signal(
+    symbol: str,
+    bar_volume: int = 500,
+    lookback_bars: int = 6,
+    min_prior_streak: int = 3,
+    rr_min: float = 2.0,
+) -> dict:
+    """Detect a donAdri setup candidate right now (semi-mode brain).
+
+    Reconstructs live context (dva_state + previous-RTH value area + wVWAP bands
+    + Heikin Ashi volume bars) and looks for the most recent VALID signal in the
+    last `lookback_bars` closed volume bars: DVA filter (K#12), price at a pVA
+    edge, giro de HA that breaks a prior streak >= min_prior_streak (acceptance,
+    anti-chop), and RR >= rr_min to the next level.
+
+    This is a PROPOSAL for human confirmation, never an auto order — it does not
+    judge discretionary "shift in condition". If the feed is stale it refuses.
+    Scanning several bars means calling it every few minutes won't miss the giro.
+    """
+    symbol = symbol.strip().upper()
+    root = "MNQ" if symbol.startswith("MNQ") else "MES"
+    config = Config.from_env()
+
+    market_data = _scid_freshness(config, symbol)
+    if market_data.get("stale"):
+        return {
+            "ok": False,
+            "error": "market data guard: SCID data stale or missing; cannot detect setups on dead data",
+            "market_data": market_data,
+        }
+
+    resolved = _resolve_scid_path(config.data_path, symbol)
+    if resolved is None:
+        return {"ok": False, "error": f"file not found for {symbol}"}
+    resolved_symbol, scid_path = resolved
+
+    records = await asyncio.to_thread(
+        scid_reader.read_records_since,
+        scid_path,
+        time.time() - 72 * 3600,
+        FEATURES_LOOKBACK_MAX_RECORDS,
+    )
+    if not records:
+        return {"ok": False, "error": f"no recent records in {scid_path}"}
+
+    signal = await asyncio.to_thread(
+        lambda: indicator_engine.detect_setup(
+            records,
+            tick_size=0.25,
+            stop_points=SETUP_STOP_POINTS[root],
+            zone_points=SETUP_ZONE_POINTS[root],
+            vol_bar=bar_volume,
+            min_prior_streak=min_prior_streak,
+            rr_min=rr_min,
+            lookback_bars=lookback_bars,
+        )
+    )
+    return {
+        "ok": True,
+        "symbol": symbol,
+        "resolved_symbol": resolved_symbol,
+        "market_data": market_data,
+        "mode": "semi (propuesta para confirmación humana; no ejecuta)",
+        **signal,
+    }
+
+
 def _normalize_level_name(name: str) -> str:
     return "".join(ch for ch in name.lower() if ch.isalnum())
 
