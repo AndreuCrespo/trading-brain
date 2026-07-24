@@ -26,6 +26,10 @@ ZONE_POINTS = {"MES": 3.0, "MNQ": 15.0}
 RR_MIN = 2.0
 VOL_BAR = 500
 S2200 = 22 * 3600
+# Aceptación: el giro solo cuenta si rompe una racha previa de >= N barras del
+# color contrario. En chop los colores alternan cada 1-2 barras, así que esto
+# descarta el parpadeo (el fenómeno de las 28 señales del 14-jul, obs #59).
+MIN_PRIOR_STREAK = 3
 
 
 def root_of(sym): return "MNQ" if sym.upper().startswith("MNQ") else "MES"
@@ -69,11 +73,22 @@ def replay_session(all_recs, cur_start, root):
     closes = [datetime.fromisoformat(b["time"]).timestamp() for b in vbars]
 
     signals = []
+    zones_fired = set()  # una señal por zona (pVAH/pVAL) por sesión
     for i in range(2, len(ha) - 1):
         if ha[i]["forming"]:
             continue
         # giro = cambio de color respecto a la barra cerrada anterior
         if ha[i]["color"] == ha[i - 1]["color"]:
+            continue
+        # ACEPTACIÓN: el giro debe romper una racha previa de >= N barras del
+        # color contrario (no un parpadeo de chop). Cuenta barras iguales antes.
+        prior_streak = 0
+        for j in range(i - 1, -1, -1):
+            if ha[j]["color"] == ha[i - 1]["color"]:
+                prior_streak += 1
+            else:
+                break
+        if prior_streak < MIN_PRIOR_STREAK:
             continue
         giro_dir = "alcista" if ha[i]["color"] == "verde" else "bajista"
         bar_close_ts = closes[i + 1] if i + 1 < len(closes) else closes[i]
@@ -109,6 +124,8 @@ def replay_session(all_recs, cur_start, root):
                 setup, side, zone, direction = "EF/RPB", "long", "pVAL", 1
         if setup is None:
             continue
+        if zone in zones_fired:   # ya operamos esta zona hoy: no re-entrar en chop
+            continue
 
         target = next_lvl(direction)
         if target is None:
@@ -131,6 +148,7 @@ def replay_session(all_recs, cur_start, root):
                 if r.close >= stop: outcome, exit_px = "stop", stop; break
                 if r.close <= target: outcome, exit_px = "target", target; break
         pts = (exit_px - entry) * direction
+        zones_fired.add(zone)
         signals.append({
             "time": datetime.fromtimestamp(bar_close_ts, tz=timezone.utc).strftime("%m-%d %H:%M"),
             "setup": setup, "side": side, "zone": zone, "dva": state,
