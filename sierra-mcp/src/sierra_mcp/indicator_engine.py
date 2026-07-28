@@ -492,19 +492,25 @@ def evaluate_giro_setup(giro, vbars, ha, cur_recs, week_window, pva, *,
         return None
 
     entry = levels[zone]
-    cands = [v for v in levels.values() if (v - entry) * direction > zone_points]
-    if not cands:
-        return None
-    target = min(cands, key=lambda v: abs(v - entry))
     stop = entry - direction * stop_points
-    rr = (target - entry) * direction / stop_points
-    if rr < rr_min:
-        return None
+    # TARGET = objetivo en R FIJO (donAdri 24-jul: 2R salida completa vale en
+    # estos casos). El nivel salir-total cercano NO es el target ni un veto —
+    # es un waypoint de gestión/escalado (K#17). El target/escalado óptimo
+    # (2R vs 3R vs 1.5R+2R) se estudia con el MFE, no se fija a ciegas.
+    target = entry + direction * rr_min * stop_points
+    beyond = [(k, v) for k, v in levels.items() if (v - entry) * direction > zone_points]
+    nearest = min(beyond, key=lambda kv: abs(kv[1] - entry)) if beyond else None
     return {
         "setup": setup, "side": side, "zone": zone, "direction": direction,
         "dva_state": state, "giro": giro_dir, "prior_streak": giro["prior_streak"],
-        "entry": round(entry, 2), "stop": round(stop, 2), "target": round(target, 2),
-        "rr": round(rr, 2), "bar_index": i, "bar_ts": bar_ts,
+        "entry": round(entry, 2), "stop": round(stop, 2),
+        "target": round(target, 2), "target_R": rr_min,
+        "nearest_salir_total": (
+            {"level": nearest[0], "price": round(nearest[1], 2),
+             "R": round(abs(nearest[1] - entry) / stop_points, 2)}
+            if nearest else None
+        ),
+        "bar_index": i, "bar_ts": bar_ts,
         "bar_time": datetime.fromtimestamp(bar_ts, tz=timezone.utc).isoformat(),
         "levels": {k: round(v, 2) for k, v in levels.items()},
     }
@@ -592,14 +598,15 @@ def detect_setup(
             "signal": True, "bars_ago": bars_ago, "current_price": now_price,
             "still_near_zone": abs(now_price - sig["entry"]) <= zone_points,
             **{k: sig[k] for k in ("setup", "side", "zone", "dva_state", "giro",
-                                   "prior_streak", "entry", "stop", "target", "rr",
-                                   "bar_time", "levels")},
+                                   "prior_streak", "entry", "stop", "target", "target_R",
+                                   "nearest_salir_total", "bar_time", "levels")},
             "checklist": {
                 "dva_filter": sig["dva_state"],
                 "zona": f"{sig['zone']} (borde pVA)",
                 "aceptacion": f"racha previa {sig['prior_streak']} barras (>= {min_prior_streak})",
                 "giro_HA": f"{sig['giro']} OK",
-                "rr>=min": True,
+                "target": f"{sig['target_R']}R fijo (salida completa; escalado a estudiar con MFE)",
+                "nivel_cercano": sig["nearest_salir_total"],
                 "shift_in_condition": "NO EVALUADO (discrecional — confirmación humana)",
             },
         }

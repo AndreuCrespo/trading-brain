@@ -73,23 +73,32 @@ def replay_session(all_recs, cur_start, root):
 
         entry, stop, target, direction = sig["entry"], sig["stop"], sig["target"], sig["direction"]
         bar_ts = sig["bar_ts"]
-        # camina hacia delante hasta desenlace (stop-first)
-        outcome, exit_px = "timeout", rth_recs[-1].close
+        # Dos medidas: (a) resultado bajo la regla 2R salida-completa (¿toca +2R
+        # antes que -1R?, stop-first conservador); (b) MFE = excursión máxima a
+        # favor HASTA que salta el stop -1R, ignorando el target — así el MFE dice
+        # si 3R/escalado habría sido alcanzable (el estudio que pide Adri).
+        hit_target = stopped = False
+        mfe_pts = 0.0
         for r in rth_recs:
             if r.unix_time <= bar_ts:
                 continue
-            if direction == 1:
-                if r.close <= stop: outcome, exit_px = "stop", stop; break
-                if r.close >= target: outcome, exit_px = "target", target; break
-            else:
-                if r.close >= stop: outcome, exit_px = "stop", stop; break
-                if r.close <= target: outcome, exit_px = "target", target; break
-        pts = (exit_px - entry) * direction
+            stop_hit = r.close <= stop if direction == 1 else r.close >= stop
+            if stop_hit:
+                stopped = True
+                break
+            mfe_pts = max(mfe_pts, (r.close - entry) * direction)
+            if not hit_target and (r.close >= target if direction == 1 else r.close <= target):
+                hit_target = True
+        outcome = "target" if hit_target else ("stop" if stopped else "timeout")
+        r_result = RR_MIN if hit_target else (-1.0 if stopped else 0.0)
+        pts = r_result * stop_pts
+        nst = sig.get("nearest_salir_total")
         signals.append({
             "time": datetime.fromtimestamp(bar_ts, tz=timezone.utc).strftime("%m-%d %H:%M"),
             "setup": sig["setup"], "side": sig["side"], "zone": sig["zone"], "dva": sig["dva_state"],
             "entry": entry, "stop": stop, "target": target,
-            "rr": sig["rr"], "outcome": outcome, "r": round(pts / stop_pts, 2),
+            "nearest": f"{nst['level']}@{nst['R']}R" if nst else "-",
+            "outcome": outcome, "r": round(pts / stop_pts, 2), "mfe_R": round(mfe_pts / stop_pts, 2),
         })
     return signals
 
@@ -108,12 +117,19 @@ def main(symbol, n_sessions):
         for s in sig:
             all_sig.append(s)
             print(f"{s['time']} {s['setup']:<7} {s['side']:<5} @{s['zone']:<5} dva={s['dva']:<16} "
-                  f"entry {s['entry']} stop {s['stop']} tgt {s['target']} RR{s['rr']} -> {s['outcome']:<7} {s['r']:+.2f}R")
+                  f"entry {s['entry']} tgt {s['target']}(2R) near {s['nearest']:<12} "
+                  f"-> {s['outcome']:<7} {s['r']:+.2f}R  MFE {s['mfe_R']:+.2f}R")
     if all_sig:
         wins = [s for s in all_sig if s["r"] > 0]
         tot = sum(s["r"] for s in all_sig)
+        mfes = sorted(s["mfe_R"] for s in all_sig)
         print(f"\nSEÑALES: {len(all_sig)} | ganadoras: {len(wins)} ({len(wins)/len(all_sig):.0%}) | "
               f"total: {tot:+.2f}R | expectativa: {tot/len(all_sig):+.2f}R/señal")
+        # Distribución de MFE (para estudiar target/escalado óptimo, como pide Adri)
+        import statistics
+        reach = lambda x: sum(1 for m in mfes if m >= x) / len(mfes)
+        print(f"MFE: mediana {statistics.median(mfes):+.2f}R | "
+              f">=1R {reach(1.0):.0%} | >=1.5R {reach(1.5):.0%} | >=2R {reach(2.0):.0%} | >=3R {reach(3.0):.0%}")
     else:
         print("\n0 señales en el rango")
 
